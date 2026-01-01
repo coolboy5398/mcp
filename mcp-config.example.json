@@ -1,0 +1,17 @@
+{
+    "mcpServers": {
+        "court-document": {
+            "command": "node",
+            "args": [
+                "dist/server.js"
+            ],
+            "env": {
+                "SESSION_PATH": "./session-data",
+                "HEADLESS": "true",
+                "DEBUG": "false"
+            },
+            "disabled": false,
+            "autoApprove": []
+        }
+    }
+}
