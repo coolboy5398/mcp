@@ -6,27 +6,27 @@
 
 ## 任务列表
 
-- [ ] 1. 项目初始化和基础设施
-  - [ ] 1.1 创建项目目录结构和package.json
+- [x] 1. 项目初始化和基础设施
+  - [x] 1.1 创建项目目录结构和package.json
     - 初始化npm项目
     - 添加依赖：@modelcontextprotocol/sdk, playwright, zod
     - 配置TypeScript和构建脚本
     - _需求: 全部_
 
-  - [ ] 1.2 配置TypeScript和Playwright
+  - [x] 1.2 配置TypeScript和Playwright
     - 创建tsconfig.json
     - 创建playwright.config.ts
     - _需求: 全部_
 
 - [ ] 2. 数据模型和类型定义
   - [ ] 2.1 实现案件类型和法院级别枚举
-    - 创建 src/模型/案件类型.ts
-    - 创建 src/模型/法院级别.ts
+    - 创建 src/models/case-type.ts
+    - 创建 src/models/court-level.ts
     - 定义枚举和映射表
     - _需求: 4.1, 4.2, 4.3_
 
   - [ ] 2.2 实现文书数据模型
-    - 创建 src/模型/文书.ts
+    - 创建 src/models/document.ts
     - 定义文书摘要和文书详情接口
     - _需求: 1.2, 3.2_
 
@@ -36,20 +36,20 @@
 
 - [ ] 3. 错误处理模块
   - [ ] 3.1 实现错误类型和错误处理
-    - 创建 src/错误/index.ts
+    - 创建 src/errors/index.ts
     - 定义错误代码枚举
     - 实现自定义错误类
     - _需求: 6.1, 6.2, 6.3_
 
 - [ ] 4. 认证管理模块
   - [ ] 4.1 实现Session存储
-    - 创建 src/认证/Session存储.ts
+    - 创建 src/auth/session-store.ts
     - 实现Cookie的保存和加载
     - 实现过期检查
     - _需求: 7.3, 7.4, 7.5_
 
   - [ ] 4.2 实现认证管理器
-    - 创建 src/认证/管理器.ts
+    - 创建 src/auth/manager.ts
     - 实现浏览器初始化
     - 实现登录状态检查
     - 实现二维码获取（截图）
@@ -65,13 +65,13 @@
 
 - [ ] 6. 浏览器操作模块
   - [ ] 6.1 实现浏览器管理器
-    - 创建 src/浏览器/管理器.ts
+    - 创建 src/browser/manager.ts
     - 实现浏览器启动和关闭
     - 实现有头/无头模式切换
     - _需求: 7.1_
 
   - [ ] 6.2 实现页面操作器
-    - 创建 src/浏览器/操作器.ts
+    - 创建 src/browser/operator.ts
     - 实现搜索操作
     - 实现翻页操作
     - 实现文书详情获取
@@ -79,13 +79,13 @@
 
 - [ ] 7. 页面解析模块
   - [ ] 7.1 实现搜索结果解析器
-    - 创建 src/解析器/搜索结果.ts
+    - 创建 src/parser/search-result.ts
     - 解析搜索结果列表
     - 提取文书摘要信息
     - _需求: 1.2_
 
   - [ ] 7.2 实现文书详情解析器
-    - 创建 src/解析器/文书详情.ts
+    - 创建 src/parser/document-detail.ts
     - 解析文书全文
     - 提取元数据（当事人、法官等）
     - _需求: 3.2_
@@ -103,7 +103,7 @@
 
 - [ ] 9. MCP工具实现
   - [ ] 9.1 实现认证相关工具
-    - 创建 src/工具/认证.ts
+    - 创建 src/tools/auth.ts
     - 实现 login_status 工具
     - 实现 login_qrcode 工具
     - 实现 wait_login 工具
@@ -111,13 +111,13 @@
     - _需求: 7.1, 7.2_
 
   - [ ] 9.2 实现元数据工具
-    - 创建 src/工具/元数据.ts
+    - 创建 src/tools/metadata.ts
     - 实现 list_case_types 工具
     - 实现 list_court_levels 工具
     - _需求: 4.1, 4.2, 4.3_
 
   - [ ] 9.3 实现搜索工具
-    - 创建 src/工具/搜索.ts
+    - 创建 src/tools/search.ts
     - 实现 search_documents 工具
     - 支持关键词搜索
     - 支持筛选条件
@@ -125,7 +125,7 @@
     - _需求: 1.1, 1.2, 1.3, 2.1, 2.2, 2.3, 2.4, 5.1, 5.2, 5.3_
 
   - [ ] 9.4 实现文书详情工具
-    - 创建 src/工具/文书详情.ts
+    - 创建 src/tools/document.ts
     - 实现 get_document 工具
     - _需求: 3.1, 3.2, 3.3_
 
@@ -139,7 +139,7 @@
 
 - [ ] 10. MCP服务器入口
   - [ ] 10.1 实现MCP服务器
-    - 创建 src/服务器.ts
+    - 创建 src/server.ts
     - 注册所有工具
     - 配置STDIO传输
     - 实现服务器启动逻辑

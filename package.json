@@ -1,0 +1,45 @@
+{
+    "name": "court-document-mcp",
+    "version": "1.0.0",
+    "description": "裁判文书网MCP服务器 - 使AI助手能够查询、检索和分析中国法院公开的裁判文书数据",
+    "type": "module",
+    "main": "dist/server.js",
+    "bin": {
+        "court-document-mcp": "dist/server.js"
+    },
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsc --watch",
+        "start": "node dist/server.js",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
+        "lint": "eslint src --ext .ts",
+        "clean": "rimraf dist"
+    },
+    "keywords": [
+        "mcp",
+        "court",
+        "legal",
+        "china",
+        "裁判文书",
+        "法律"
+    ],
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.0",
+        "playwright": "^1.40.0",
+        "zod": "^3.22.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.10.0",
+        "fast-check": "^3.15.0",
+        "rimraf": "^5.0.5",
+        "typescript": "^5.3.0",
+        "vitest": "^1.0.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}

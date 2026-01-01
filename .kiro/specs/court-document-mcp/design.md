@@ -589,35 +589,35 @@ export default defineConfig({
 ## Project Structure
 
 ```
-裁判文书MCP/
+court-document-mcp/
 ├── src/
-│   ├── 服务器.ts           # MCP服务器入口
-│   ├── 工具/
-│   │   ├── 搜索.ts         # 搜索工具
-│   │   ├── 文书详情.ts     # 文书详情工具
-│   │   ├── 元数据.ts       # 元数据工具
-│   │   └── 认证.ts         # 认证相关工具
-│   ├── 浏览器/
-│   │   ├── 管理器.ts       # Playwright浏览器管理
-│   │   └── 操作器.ts       # 页面操作封装
-│   ├── 认证/
-│   │   ├── 管理器.ts       # 认证管理器
-│   │   └── Session存储.ts  # Session持久化
-│   ├── 解析器/
-│   │   ├── 搜索结果.ts     # 搜索结果页面解析
-│   │   └── 文书详情.ts     # 文书详情页面解析
-│   ├── 模型/
-│   │   ├── 案件类型.ts     # 案件类型
-│   │   ├── 法院级别.ts     # 法院级别
-│   │   └── 文书.ts         # 文书模型
-│   ├── 错误/
+│   ├── server.ts           # MCP服务器入口
+│   ├── tools/
+│   │   ├── search.ts       # 搜索工具
+│   │   ├── document.ts     # 文书详情工具
+│   │   ├── metadata.ts     # 元数据工具
+│   │   └── auth.ts         # 认证相关工具
+│   ├── browser/
+│   │   ├── manager.ts      # Playwright浏览器管理
+│   │   └── operator.ts     # 页面操作封装
+│   ├── auth/
+│   │   ├── manager.ts      # 认证管理器
+│   │   └── session-store.ts # Session持久化
+│   ├── parser/
+│   │   ├── search-result.ts # 搜索结果页面解析
+│   │   └── document-detail.ts # 文书详情页面解析
+│   ├── models/
+│   │   ├── case-type.ts    # 案件类型
+│   │   ├── court-level.ts  # 法院级别
+│   │   └── document.ts     # 文书模型
+│   ├── errors/
 │   │   └── index.ts        # 错误处理
-│   └── 工具函数/
-│       └── 验证.ts         # 参数验证
+│   └── utils/
+│       └── validation.ts   # 参数验证
 ├── tests/
-│   ├── 单元测试/           # 单元测试
-│   ├── 属性测试/           # 属性测试
-│   └── 集成测试/           # 集成测试
+│   ├── unit/               # 单元测试
+│   ├── property/           # 属性测试
+│   └── integration/        # 集成测试
 ├── session-data/           # Session存储目录
 ├── package.json
 ├── tsconfig.json
