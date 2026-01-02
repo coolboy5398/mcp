@@ -26,13 +26,90 @@ cd court-document-mcp
 # 安装依赖
 npm install
 
+# 安装 Playwright 浏览器（必须）
+npx playwright install chromium
+
 # 构建项目
 npm run build
 ```
 
+> **重要**：Playwright 需要下载浏览器才能运行。如果遇到 `Executable doesn't exist` 错误，请运行 `npx playwright install` 安装浏览器。
+
 ## 配置
 
-### MCP 配置
+### Cherry Studio 配置
+
+在 Cherry Studio 中配置此 MCP 服务器：
+
+1. 打开 Cherry Studio 设置
+2. 找到 `MCP 服务器` 选项
+3. 点击 `添加服务器`
+4. 填写以下参数：
+   - **名称**：`court-document`
+   - **类型**：选择 `STDIO`
+   - **命令**：`node`
+   - **参数**：`<项目绝对路径>/dist/server.js`（例如：`D:/开发/MCP/裁判文书网mcp/dist/server.js`）
+   - **环境变量**（可选）：
+     - `SESSION_PATH`: `./session-data`
+     - `HEADLESS`: `true`
+     - `DEBUG`: `false`
+5. 点击 `保存`
+
+配置完成后，Cherry Studio 会自动启动该 MCP 服务器。
+
+> **注意**：首次使用前请确保已运行 `npm run build` 构建项目。
+
+### Cherry Studio 使用示例
+
+配置成功后，在 Cherry Studio 聊天框中可以直接对话使用：
+
+#### 1. 首次登录（必须）
+
+```
+请帮我登录裁判文书网
+```
+
+AI 会调用 `login_with_browser` 工具弹出浏览器窗口，使用支付宝扫码登录。
+
+#### 2. 搜索文书
+
+```
+帮我搜索关于"合同纠纷"的裁判文书
+```
+
+```
+搜索北京市的刑事案件，关键词是"诈骗"
+```
+
+```
+帮我查找2024年的民事案件，关键词"房屋买卖"
+```
+
+#### 3. 获取文书详情
+
+```
+获取文书ID为xxx的详细内容
+```
+
+#### 4. 查询元数据
+
+```
+列出所有案件类型
+```
+
+```
+有哪些法院级别可以筛选？
+```
+
+#### 5. 检查登录状态
+
+```
+检查一下裁判文书网的登录状态
+```
+
+> **提示**：Cherry Studio 会自动识别你的意图并调用相应的 MCP 工具，无需记忆具体的工具名称。
+
+### 通用 MCP 客户端配置
 
 将以下配置添加到你的 MCP 客户端配置文件中：
 
@@ -365,6 +442,20 @@ court-document-mcp/
 ├── session-data/           # Session 存储目录
 └── mcp-config.example.json # MCP 配置示例
 ```
+
+## 接口地址参考
+
+项目中使用的裁判文书网核心接口地址：
+
+| 用途     | URL                                                                                    | 定义位置                  |
+| -------- | -------------------------------------------------------------------------------------- | ------------------------- |
+| 基础地址 | `https://wenshu.court.gov.cn`                                                          | `src/browser/operator.ts` |
+| 搜索页面 | `https://wenshu.court.gov.cn/website/wenshu/181029CR4M5A62CH/index.html`               | `src/browser/operator.ts` |
+| 网站首页 | `https://wenshu.court.gov.cn/`                                                         | `src/auth/manager.ts`     |
+| 登录页面 | `https://wenshu.court.gov.cn/website/wenshu/181010CARHS5BS3C/index.html`               | `src/auth/manager.ts`     |
+| 文书详情 | `https://wenshu.court.gov.cn/website/wenshu/181107ANFZ0BXSK4/index.html?docId={docId}` | `src/browser/operator.ts` |
+
+> 注意：这些 URL 可能会随裁判文书网更新而变化，如遇访问问题请检查官网是否有变更。
 
 ## 注意事项
 
