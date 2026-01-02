@@ -4,7 +4,7 @@
  * 需求: 7.1, 7.2, 7.3
  */
 
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { chromium, Browser, BrowserContext, Page, Frame } from 'playwright';
 import {
     SessionStore,
     CookieInfo,
@@ -238,14 +238,18 @@ export class AuthManager {
         }
 
         try {
-            // 检查是否存在用户信息元素
-            const userInfoElement = await this.page.$(QR_CODE_SELECTORS.userInfo);
+            const frame = await this.getLoginFrame();
+
+            // 检查是否存在用户信息元素（通常在顶层页面或iframe中都可能出现）
+            const userInfoElement = await this.page.$(QR_CODE_SELECTORS.userInfo) || 
+                                  await frame.$(QR_CODE_SELECTORS.userInfo);
             if (userInfoElement) {
                 return true;
             }
 
             // 检查是否存在登录按钮（如果存在则未登录）
-            const loginButton = await this.page.$(QR_CODE_SELECTORS.loginButton);
+            // 登录按钮通常在iframe中
+            const loginButton = await frame.$(QR_CODE_SELECTORS.loginButton);
             if (loginButton) {
                 const isVisible = await loginButton.isVisible();
                 return !isVisible; // 登录按钮可见表示未登录
@@ -264,6 +268,30 @@ export class AuthManager {
     }
 
     /**
+     * 获取登录frame
+     * 裁判文书网登录框嵌套在iframe中
+     */
+    private async getLoginFrame(): Promise<Page | Frame> {
+        if (!this.page) {
+            throw new Error('页面未初始化');
+        }
+
+        try {
+            const iframeElement = await this.page.$('iframe#contentIframe');
+            if (iframeElement) {
+                const frame = await iframeElement.contentFrame();
+                if (frame) {
+                    return frame as unknown as Page; //甚至可以直接用Frame，它们有类似的API接口
+                }
+            }
+        } catch (error) {
+            console.log('获取iframe失败，使用主页面:', error);
+        }
+
+        return this.page;
+    }
+
+    /**
      * 获取登录二维码
      * 需求 7.2: 当用户未登录时，文书服务器应返回支付宝认证的二维码URL
      */
@@ -279,6 +307,13 @@ export class AuthManager {
 
         // 等待页面加载
         await this.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
+        
+        // 等待iframe加载
+        try {
+            await this.page.waitForSelector('iframe#contentIframe', { timeout: 10000, state: 'attached' });
+        } catch (e) {
+            console.log('等待iframe超时，尝试继续');
+        }
 
         // 点击支付宝图标触发二维码显示
         await this.clickAlipayIcon();
@@ -290,9 +325,11 @@ export class AuthManager {
         let qrCodeBase64: string;
 
         try {
+            const frame = await this.getLoginFrame();
+
             // 尝试找到二维码元素并截图
-            const qrCodeElement = await this.page.$(QR_CODE_SELECTORS.qrCodeImage)
-                || await this.page.$(QR_CODE_SELECTORS.qrCodeContainer);
+            const qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
+                || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
 
             if (qrCodeElement) {
                 const screenshot = await qrCodeElement.screenshot({ type: 'png' });
@@ -324,11 +361,13 @@ export class AuthManager {
             return;
         }
 
+        const frame = await this.getLoginFrame();
+
         // 策略1: 使用选择器直接查找支付宝图标
         const alipaySelectors = QR_CODE_SELECTORS.alipayIcon.split(', ');
         for (const selector of alipaySelectors) {
             try {
-                const element = await this.page.$(selector);
+                const element = await frame.$(selector);
                 if (element && await element.isVisible()) {
                     await element.click();
                     console.log(`成功点击支付宝图标: ${selector}`);
@@ -342,7 +381,7 @@ export class AuthManager {
 
         // 策略2: 查找包含"支付宝"文字的可点击元素
         try {
-            const alipayText = this.page.getByText('支付宝', { exact: false });
+            const alipayText = frame.getByText('支付宝', { exact: false });
             const count = await alipayText.count();
             if (count > 0) {
                 await alipayText.first().click();
@@ -356,7 +395,7 @@ export class AuthManager {
 
         // 策略3: 查找所有图片元素，通过alt或src属性识别支付宝图标
         try {
-            const allImages = await this.page.$$('img');
+            const allImages = await frame.$$('img');
             for (const img of allImages) {
                 const alt = await img.getAttribute('alt') || '';
                 const src = await img.getAttribute('src') || '';
@@ -379,7 +418,7 @@ export class AuthManager {
 
         // 策略4: 尝试点击登录按钮（作为备选）
         try {
-            const loginBtn = await this.page.$(QR_CODE_SELECTORS.loginButton);
+            const loginBtn = await frame.$(QR_CODE_SELECTORS.loginButton);
             if (loginBtn && await loginBtn.isVisible()) {
                 await loginBtn.click();
                 console.log('点击了通用登录按钮');
