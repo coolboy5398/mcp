@@ -91,6 +91,10 @@ const QR_CODE_SELECTORS = {
     userInfo: '.user-info, .username, [class*="user-name"], .login-user',
     /** 登录按钮选择器 */
     loginButton: '.login-btn, [class*="login"], button:has-text("登录")',
+    /** 支付宝登录图标选择器（点击后显示二维码） */
+    alipayIcon: 'img[alt*="支付宝"], img[src*="alipay"], img[src*="zhifubao"], .alipay-icon, .alipay-login, [class*="alipay"], [title*="支付宝"], a:has(img[alt*="支付宝"])',
+    /** 支付宝二维码iframe选择器（二维码可能在iframe中） */
+    alipayQRCodeIframe: 'iframe[src*="alipay"], iframe[id*="alipay"]',
 };
 
 /**
@@ -276,16 +280,8 @@ export class AuthManager {
         // 等待页面加载
         await this.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
 
-        // 尝试点击登录按钮（如果需要）
-        try {
-            const loginBtn = await this.page.$(QR_CODE_SELECTORS.loginButton);
-            if (loginBtn && await loginBtn.isVisible()) {
-                await loginBtn.click();
-                await this.page.waitForTimeout(2000); // 等待二维码加载
-            }
-        } catch {
-            // 忽略点击失败
-        }
+        // 点击支付宝图标触发二维码显示
+        await this.clickAlipayIcon();
 
         // 等待二维码出现
         await this.page.waitForTimeout(3000);
@@ -317,6 +313,83 @@ export class AuthManager {
             说明: '请使用支付宝扫描二维码登录裁判文书网',
             过期秒数: 120, // 二维码通常2分钟过期
         };
+    }
+
+    /**
+     * 点击支付宝图标触发二维码显示
+     * 裁判文书网登录页面需要先点击支付宝图标才会显示二维码
+     */
+    private async clickAlipayIcon(): Promise<void> {
+        if (!this.page) {
+            return;
+        }
+
+        // 策略1: 使用选择器直接查找支付宝图标
+        const alipaySelectors = QR_CODE_SELECTORS.alipayIcon.split(', ');
+        for (const selector of alipaySelectors) {
+            try {
+                const element = await this.page.$(selector);
+                if (element && await element.isVisible()) {
+                    await element.click();
+                    console.log(`成功点击支付宝图标: ${selector}`);
+                    await this.page.waitForTimeout(2000); // 等待二维码加载
+                    return;
+                }
+            } catch {
+                // 继续尝试下一个选择器
+            }
+        }
+
+        // 策略2: 查找包含"支付宝"文字的可点击元素
+        try {
+            const alipayText = this.page.getByText('支付宝', { exact: false });
+            const count = await alipayText.count();
+            if (count > 0) {
+                await alipayText.first().click();
+                console.log('成功点击包含"支付宝"文字的元素');
+                await this.page.waitForTimeout(2000);
+                return;
+            }
+        } catch {
+            // 继续尝试其他方法
+        }
+
+        // 策略3: 查找所有图片元素，通过alt或src属性识别支付宝图标
+        try {
+            const allImages = await this.page.$$('img');
+            for (const img of allImages) {
+                const alt = await img.getAttribute('alt') || '';
+                const src = await img.getAttribute('src') || '';
+                const title = await img.getAttribute('title') || '';
+                
+                if (alt.includes('支付宝') || alt.toLowerCase().includes('alipay') ||
+                    src.includes('alipay') || src.includes('zhifubao') ||
+                    title.includes('支付宝')) {
+                    if (await img.isVisible()) {
+                        await img.click();
+                        console.log('通过图片属性识别并点击支付宝图标');
+                        await this.page.waitForTimeout(2000);
+                        return;
+                    }
+                }
+            }
+        } catch {
+            // 继续尝试其他方法
+        }
+
+        // 策略4: 尝试点击登录按钮（作为备选）
+        try {
+            const loginBtn = await this.page.$(QR_CODE_SELECTORS.loginButton);
+            if (loginBtn && await loginBtn.isVisible()) {
+                await loginBtn.click();
+                console.log('点击了通用登录按钮');
+                await this.page.waitForTimeout(2000);
+            }
+        } catch {
+            // 忽略点击失败
+        }
+
+        console.log('警告: 未能找到支付宝登录图标，请检查页面结构');
     }
 
     /**
