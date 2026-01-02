@@ -76,26 +76,36 @@ const DEFAULT_CONFIG: Required<OperatorConfig> = {
 
 /**
  * 页面选择器常量
+ * 根据裁判文书网实际页面结构定义（2026年1月实测）
  */
 const SELECTORS = {
-    // 搜索相关
-    searchInput: 'input[type="text"], input.search-input, #searchInput, [placeholder*="搜索"]',
-    searchButton: 'button.search-btn, .search-button, button:has-text("搜索"), [type="submit"]',
+    // 搜索相关 - 基于实际页面快照分析
+    // 页面搜索框 placeholder: "输入案由、关键词、法院、当事人、律师"
+    searchInputPlaceholder: '输入案由、关键词、法院、当事人、律师',
+    // 搜索按钮文本（是个div而非button）
+    searchButtonText: '搜索',
+    // 备选CSS选择器 - 基于实际页面结构
+    searchInputFallback: 'input[placeholder*="案由"], input[placeholder*="关键词"]',
+    // 通用搜索框选择器（最后备选）
+    searchInputGeneric: '#suggestSource, input#searchInput',
+    // 搜索按钮备选 - 裁判文书网的搜索按钮是div，不是button
+    searchButtonFallback: 'div:text-is("搜索"), div.search-btn, .search-button',
 
-    // 搜索结果
-    resultList: '.dataItem, .result-item, .case-item, .list-item',
-    resultTitle: '.caseName, .title, h3, .case-title',
-    resultCaseNo: '.caseNo, .case-no, .ah',
-    resultCourt: '.court, .courtName, .fy',
-    resultDate: '.date, .cprq, .judgeDate',
-    resultType: '.caseType, .ajlx, .type',
+    // 搜索结果 - 基于实际页面结构（2026年1月实测）
+    // 每个结果项是一个包含 h4 标题的容器
+    resultList: 'div:has(> h4 > a[href*="docId"])',
+    resultTitle: 'h4 a',
+    resultCaseNo: 'div:nth-child(2) > div:nth-child(2)',  // 案号在第二行第二个div
+    resultCourt: 'div:nth-child(2) > div:first-child',   // 法院在第二行第一个div
+    resultDate: 'div:nth-child(2) > div:nth-child(3)',    // 日期在第二行第三个div
+    resultType: 'div:first-child > div:nth-child(2)',     // 类型标签
 
-    // 分页
-    pagination: '.pagination, .pager, .page-nav',
-    pageNumber: '.page-num, .page-item, [data-page]',
-    nextPage: '.next, .page-next, button:has-text("下一页")',
-    prevPage: '.prev, .page-prev, button:has-text("上一页")',
-    totalCount: '.total, .result-count, .total-count',
+    // 分页 - 基于实际页面结构
+    pagination: 'div:has(> a:text("下一页"))',
+    pageNumber: 'a[href="javascript:;"]',
+    nextPage: 'a:text("下一页")',
+    prevPage: 'a:text("上一页")',
+    totalCount: 'div:text-matches("共检索到.*篇文书")',
 
     // 筛选条件
     filterCaseType: '.case-type-filter, [data-filter="caseType"]',
@@ -216,31 +226,129 @@ export class PageOperator {
 
     /**
      * 输入搜索关键词
+     * 使用多层备选策略定位搜索框
      */
     private async inputSearchKeyword(keyword: string): Promise<void> {
-        const searchInput = await this.page.waitForSelector(SELECTORS.searchInput, {
-            timeout: this.config.elementTimeout,
-        });
-
-        if (!searchInput) {
-            throw new ServiceUnavailableError('找不到搜索输入框');
+        // 策略1: 优先使用 getByPlaceholder 精确定位
+        const searchInput = this.page.getByPlaceholder(SELECTORS.searchInputPlaceholder);
+        
+        try {
+            await searchInput.waitFor({
+                state: 'visible',
+                timeout: 5000  // 缩短等待时间，快速降级
+            });
+            await searchInput.clear();
+            await searchInput.fill(keyword);
+            return;
+        } catch {
+            // 精确匹配失败，继续尝试备选方案
         }
 
-        await searchInput.fill(keyword);
+        // 策略2: 尝试使用明确的CSS选择器
+        const fallbackSelectors = [
+            SELECTORS.searchInputFallback,
+            SELECTORS.searchInputGeneric,
+        ];
+
+        for (const selector of fallbackSelectors) {
+            const selectors = selector.split(',').map(s => s.trim());
+            for (const sel of selectors) {
+                try {
+                    const element = await this.page.waitForSelector(sel, {
+                        state: 'visible',
+                        timeout: 2000
+                    });
+                    if (element) {
+                        await element.fill(keyword);
+                        return;
+                    }
+                } catch {
+                    // 继续尝试下一个选择器
+                }
+            }
+        }
+
+        // 策略3: 查找所有可见的text input，选择最合适的一个
+        const allInputs = await this.page.$$('input[type="text"]:visible, input:not([type]):visible');
+        for (const input of allInputs) {
+            const isVisible = await input.isVisible();
+            if (isVisible) {
+                const placeholder = await input.getAttribute('placeholder');
+                const id = await input.getAttribute('id');
+                // 优先选择有搜索相关placeholder或id的输入框
+                if (placeholder?.includes('搜索') || placeholder?.includes('关键词') ||
+                    placeholder?.includes('案由') || id?.includes('search') || id?.includes('keyword')) {
+                    await input.fill(keyword);
+                    return;
+                }
+            }
+        }
+
+        // 策略4: 如果还是没找到，使用第一个可见的输入框
+        if (allInputs.length > 0) {
+            for (const input of allInputs) {
+                const isVisible = await input.isVisible();
+                if (isVisible) {
+                    await input.fill(keyword);
+                    return;
+                }
+            }
+        }
+
+        throw new ServiceUnavailableError('找不到搜索输入框，请确认页面已正确加载');
     }
 
     /**
      * 点击搜索按钮
+     * 裁判文书网的搜索按钮是一个div元素，需要特殊处理
      */
     private async clickSearchButton(): Promise<void> {
-        const searchButton = await this.page.$(SELECTORS.searchButton);
-
-        if (searchButton) {
-            await searchButton.click();
-        } else {
-            // 如果找不到搜索按钮，尝试按回车键
-            await this.page.keyboard.press('Enter');
+        // 策略1: 使用getByRole定位搜索区域附近的可点击元素
+        try {
+            // 搜索按钮紧邻搜索框，先定位搜索框再找相邻的搜索按钮
+            const searchBtn = this.page.locator('div').filter({ hasText: /^搜索$/ }).first();
+            await searchBtn.waitFor({ state: 'visible', timeout: 3000 });
+            await searchBtn.click();
+            return;
+        } catch {
+            // 继续尝试其他方法
         }
+
+        // 策略2: 使用getByText精确匹配
+        try {
+            const searchButton = this.page.getByText(SELECTORS.searchButtonText, { exact: true }).first();
+            await searchButton.waitFor({ state: 'visible', timeout: 3000 });
+            await searchButton.click();
+            return;
+        } catch {
+            // 继续尝试其他方法
+        }
+
+        // 策略3: 使用CSS选择器
+        const fallbackSelectors = [
+            'div:text-is("搜索")',
+            '.search-btn',
+            'div.search-button',
+            '[class*="search"] div:text("搜索")',
+        ];
+
+        for (const selector of fallbackSelectors) {
+            try {
+                const btn = await this.page.waitForSelector(selector, {
+                    state: 'visible',
+                    timeout: 1000
+                });
+                if (btn) {
+                    await btn.click();
+                    return;
+                }
+            } catch {
+                // 继续尝试下一个
+            }
+        }
+
+        // 策略4: 最后尝试按回车键触发搜索
+        await this.page.keyboard.press('Enter');
     }
 
     /**
