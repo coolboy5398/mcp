@@ -5,6 +5,8 @@
  */
 
 import { chromium, Browser, BrowserContext, Page, Frame } from 'playwright';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
     SessionStore,
     CookieInfo,
@@ -15,6 +17,46 @@ import {
 
 // Node.js console
 declare const console: Console;
+
+/**
+ * 全局日志文件路径（由AuthManager初始化时设置）
+ */
+let globalLogFilePath: string | null = null;
+
+/**
+ * 设置日志文件路径
+ */
+function setLogFilePath(sessionPath: string): void {
+    globalLogFilePath = path.join(sessionPath, 'debug.log');
+}
+
+/**
+ * 写入调试日志到文件
+ */
+function logToFile(message: string): void {
+    const timestamp = new Date().toISOString();
+    const logLine = `[${timestamp}] ${message}\n`;
+    
+    // 如果设置了日志路径，写入文件
+    if (globalLogFilePath) {
+        try {
+            // 确保目录存在
+            const dir = path.dirname(globalLogFilePath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            
+            // 追加写入日志文件
+            fs.appendFileSync(globalLogFilePath, logLine, 'utf-8');
+        } catch (error) {
+            // 写入失败时只输出到stderr
+            console.error(`写入日志文件失败: ${error}`);
+        }
+    }
+    
+    // 同时输出到stderr
+    console.error(message);
+}
 
 /**
  * 认证状态接口
@@ -152,20 +194,25 @@ export class AuthManager {
      */
     private async loadSavedSession(): Promise<boolean> {
         if (!this.context) {
+            logToFile('[DEBUG] loadSavedSession: context 为空');
             return false;
         }
 
         const cookies = await this.sessionStore.getCookies();
+        logToFile(`[DEBUG] loadSavedSession: 从session文件读取到 ${cookies.length} 个cookies`);
+        
         if (cookies.length === 0) {
+            logToFile('[DEBUG] loadSavedSession: 没有保存的cookies，需要重新登录');
             return false;
         }
 
         try {
             const playwrightCookies = convertToPlaywrightCookies(cookies);
             await this.context.addCookies(playwrightCookies);
+            logToFile(`[DEBUG] loadSavedSession: 成功添加 ${playwrightCookies.length} 个cookies到浏览器`);
             return true;
         } catch (error) {
-            console.error('加载Session到浏览器失败:', error);
+            logToFile(`加载Session到浏览器失败: ${error}`);
             return false;
         }
     }
@@ -186,51 +233,36 @@ export class AuthManager {
             };
         }
 
-        // 如果有本地Session，尝试验证是否真的有效
-        try {
-            await this.initBrowser();
-
-            if (!this.page) {
-                return {
-                    已登录: false,
-                    消息: '浏览器初始化失败',
-                };
-            }
-
-            // 访问需要登录的页面验证Session
-            await this.page.goto(this.config.wenshuUrl, { waitUntil: 'domcontentloaded' });
-
-            // 等待页面加载完成
-            await this.page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { });
-
-            // 检查是否有用户信息显示（表示已登录）
-            const isLoggedIn = await this.isLoggedInOnPage();
-
-            if (isLoggedIn) {
-                const remainingTTL = await this.sessionStore.getRemainingTTL();
-                return {
-                    已登录: true,
-                    消息: '已登录',
-                    剩余有效时间: remainingTTL,
-                };
-            } else {
-                // Session无效，清除本地存储
-                await this.sessionStore.clearSession();
-                return {
-                    已登录: false,
-                    消息: 'Session已失效，请重新扫码登录',
-                };
-            }
-        } catch (error) {
+        // 检查cookies中是否包含关键cookie（SESSION或HOLDONKEY）
+        const cookies = await this.sessionStore.getCookies();
+        const hasSessionCookie = cookies.some(c =>
+            c.name === 'SESSION' || c.name === 'HOLDONKEY'
+        );
+        
+        if (!hasSessionCookie) {
+            logToFile('[DEBUG] checkLoginStatus: 没有关键cookie，session无效');
+            await this.sessionStore.clearSession();
             return {
                 已登录: false,
-                消息: `检查登录状态失败: ${error instanceof Error ? error.message : String(error)}`,
+                消息: '未登录或Session已过期，请扫码登录',
             };
         }
+
+        // 有关键cookie，认为session可能有效
+        // 不再通过页面检测来删除session，避免误删
+        logToFile(`[DEBUG] checkLoginStatus: 发现 ${cookies.length} 个cookies，包含关键cookie，认为已登录`);
+        
+        const remainingTTL = await this.sessionStore.getRemainingTTL();
+        return {
+            已登录: true,
+            消息: '已登录',
+            剩余有效时间: remainingTTL,
+        };
     }
 
     /**
      * 检查当前页面是否已登录
+     * 采用保守策略：只有明确检测到已登录标志才返回true
      */
     private async isLoggedInOnPage(): Promise<boolean> {
         if (!this.page) {
@@ -238,31 +270,54 @@ export class AuthManager {
         }
 
         try {
-            const frame = await this.getLoginFrame();
-
-            // 检查是否存在用户信息元素（通常在顶层页面或iframe中都可能出现）
-            const userInfoElement = await this.page.$(QR_CODE_SELECTORS.userInfo) || 
-                                  await frame.$(QR_CODE_SELECTORS.userInfo);
-            if (userInfoElement) {
-                return true;
-            }
-
-            // 检查是否存在登录按钮（如果存在则未登录）
-            // 登录按钮通常在iframe中
-            const loginButton = await frame.$(QR_CODE_SELECTORS.loginButton);
-            if (loginButton) {
-                const isVisible = await loginButton.isVisible();
-                return !isVisible; // 登录按钮可见表示未登录
-            }
-
-            // 检查页面URL是否包含登录相关路径
+            // 首先检查URL：如果还在登录页面，肯定未登录
             const url = this.page.url();
-            if (url.includes('login') || url.includes('auth')) {
+            if (url.includes('181010CARHS5BS3C') ||
+                url.includes('login') ||
+                url.includes('auth')) {
+                logToFile(`[DEBUG] isLoggedInOnPage: URL包含登录页特征，判定为未登录: ${url}`);
                 return false;
             }
 
-            return true; // 默认假设已登录
-        } catch {
+            const frame = await this.getLoginFrame();
+
+            // 检查是否存在二维码元素（存在则未登录）
+            const qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage) ||
+                                  await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
+            if (qrCodeElement) {
+                const isVisible = await qrCodeElement.isVisible().catch(() => false);
+                if (isVisible) {
+                    logToFile('[DEBUG] isLoggedInOnPage: 检测到二维码元素，判定为未登录');
+                    return false;
+                }
+            }
+
+            // 检查是否存在用户信息元素（通常在顶层页面或iframe中都可能出现）
+            const userInfoElement = await this.page.$(QR_CODE_SELECTORS.userInfo) ||
+                                  await frame.$(QR_CODE_SELECTORS.userInfo);
+            if (userInfoElement) {
+                const isVisible = await userInfoElement.isVisible().catch(() => false);
+                if (isVisible) {
+                    logToFile('[DEBUG] isLoggedInOnPage: 检测到用户信息元素，判定为已登录');
+                    return true;
+                }
+            }
+
+            // 检查是否存在支付宝登录图标（存在则未登录）
+            const alipayIcon = await frame.$('img[alt*="支付宝"], img[src*="alipay"]');
+            if (alipayIcon) {
+                const isVisible = await alipayIcon.isVisible().catch(() => false);
+                if (isVisible) {
+                    logToFile('[DEBUG] isLoggedInOnPage: 检测到支付宝登录图标，判定为未登录');
+                    return false;
+                }
+            }
+
+            // 默认返回false（保守策略：未明确检测到已登录就认为未登录）
+            logToFile('[DEBUG] isLoggedInOnPage: 未检测到明确的登录状态标志，默认判定为未登录');
+            return false;
+        } catch (error) {
+            logToFile(`[DEBUG] isLoggedInOnPage: 检查过程出错: ${error}`);
             return false;
         }
     }
@@ -462,8 +517,11 @@ export class AuthManager {
 
             // 检查页面URL变化（登录成功后通常会跳转）
             const currentUrl = this.page.url();
-            if (!currentUrl.includes('login') && !currentUrl.includes('auth')) {
-                // 可能已经登录成功并跳转
+            // 181010CARHS5BS3C 是登录页面的特征路径
+            if (!currentUrl.includes('181010CARHS5BS3C') &&
+                !currentUrl.includes('login') &&
+                !currentUrl.includes('auth')) {
+                // 确实已经跳转离开登录页
                 await this.saveCurrentSession();
                 return {
                     成功: true,
@@ -516,18 +574,27 @@ export class AuthManager {
      */
     private async saveCurrentSession(): Promise<void> {
         if (!this.context) {
+            logToFile('[DEBUG] saveCurrentSession: context 为空，无法保存');
             return;
         }
 
         try {
             // 获取所有Cookies
             const cookies = await this.context.cookies();
+            logToFile(`[DEBUG] saveCurrentSession: 获取到 ${cookies.length} 个cookies`);
+            
+            // 打印关键cookie信息（用于调试）
+            for (const cookie of cookies) {
+                logToFile(`[DEBUG] saveCurrentSession: cookie "${cookie.name}" domain="${cookie.domain}"`);
+            }
+            
             const cookieInfos: CookieInfo[] = convertPlaywrightCookies(cookies);
 
             // 保存到SessionStore
             await this.sessionStore.saveSession(cookieInfos);
+            logToFile(`[DEBUG] saveCurrentSession: 已保存 ${cookieInfos.length} 个cookies到session文件`);
         } catch (error) {
-            console.error('保存Session失败:', error);
+            logToFile(`保存Session失败: ${error}`);
             throw error;
         }
     }

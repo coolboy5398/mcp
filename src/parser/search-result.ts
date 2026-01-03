@@ -9,20 +9,22 @@ import { DocumentSummary, isValidDocumentSummary } from '../models/index.js';
 
 /**
  * 搜索结果页面选择器
+ * 基于2026年1月3日实测页面结构更新
  */
 export const SEARCH_RESULT_SELECTORS = {
-    // 搜索结果列表容器
-    resultContainer: '.dataItem, .result-item, .case-item, .list-item, .LM_list',
+    // 搜索结果列表容器 - .LM_list 是实际使用的容器
+    resultContainer: '.LM_list, .dataItem, .result-item, .case-item, .list-item',
 
-    // 单个结果项内的元素
-    title: '.caseName, .title, h3, .case-title, a.caseName',
-    caseNo: '.caseNo, .case-no, .ah, span.ah',
-    court: '.court, .courtName, .fy, span.fy',
-    date: '.date, .cprq, .judgeDate, span.cprq',
-    caseType: '.caseType, .ajlx, .type, span.ajlx',
+    // 单个结果项内的元素 - 基于实测结构
+    title: 'h4 a.caseName, .caseName, .title, h3, .case-title',
+    caseNo: '.ah, span.ah, .caseNo, .case-no',
+    court: '.slfyName, .court, .courtName, .fy, span.fy',
+    date: '.cprq, span.cprq, .date, .judgeDate',
+    caseType: '.labelTwo, .caseType, .ajlx, .type, span.ajlx',
 
     // 文书ID相关
-    docLink: 'a[href*="docId"], a[data-docid], a.caseName',
+    docLink: 'a.caseName[href*="docId"], a[href*="docId"], a[data-docid]',
+    docIdInput: 'input.ListSelect',  // docId 也在 data-value 属性中
 
     // 分页信息
     totalCount: '.total, .result-count, .total-count, .pageCount',

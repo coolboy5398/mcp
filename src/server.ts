@@ -333,10 +333,21 @@ async function startServer(config: ServerConfig = DEFAULT_CONFIG): Promise<void>
 }
 
 /**
- * 解析命令行参数
+ * 解析命令行参数和环境变量
+ * 优先级: 命令行参数 > 环境变量 > 默认值
  */
 function parseArgs(): ServerConfig {
     const config = { ...DEFAULT_CONFIG };
+    
+    // 首先读取环境变量
+    if (process.env.SESSION_PATH) {
+        config.sessionPath = process.env.SESSION_PATH;
+    }
+    if (process.env.HEADLESS !== undefined) {
+        config.headless = process.env.HEADLESS.toLowerCase() !== 'false';
+    }
+    
+    // 然后解析命令行参数（优先级更高）
     const args = process.argv.slice(2);
 
     for (let i = 0; i < args.length; i++) {
@@ -389,6 +400,12 @@ function printHelp(): void {
   -h, --help            显示帮助信息
   -v, --version         显示版本号
 
+环境变量:
+  SESSION_PATH          Session存储路径（推荐使用绝对路径）
+  HEADLESS              是否使用无头模式 (true/false)
+
+配置优先级: 命令行参数 > 环境变量 > 默认值
+
 示例:
   # 使用默认配置启动
   court-document-mcp
@@ -404,8 +421,11 @@ MCP配置示例 (mcp.json):
     "mcpServers": {
       "court-document": {
         "command": "node",
-        "args": ["path/to/dist/server.js"],
-        "env": {}
+        "args": ["D:/开发/MCP/裁判文书网mcp/dist/server.js"],
+        "env": {
+          "SESSION_PATH": "D:/开发/MCP/裁判文书网mcp/session-data",
+          "HEADLESS": "true"
+        }
       }
     }
   }

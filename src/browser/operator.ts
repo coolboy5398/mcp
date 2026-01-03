@@ -76,7 +76,7 @@ const DEFAULT_CONFIG: Required<OperatorConfig> = {
 
 /**
  * 页面选择器常量
- * 根据裁判文书网实际页面结构定义（2026年1月实测）
+ * 根据裁判文书网实际页面结构定义（2026年1月3日实测更新）
  */
 const SELECTORS = {
     // 搜索相关 - 基于实际页面快照分析
@@ -91,23 +91,24 @@ const SELECTORS = {
     // 搜索按钮备选 - 裁判文书网的搜索按钮是div，不是button
     searchButtonFallback: 'div:text-is("搜索"), div.search-btn, .search-button',
 
-    // 搜索结果 - 基于实际页面结构（2026年1月实测）
-    // 每个结果项是一个包含 h4 标题的容器
-    resultList: 'div:has(> h4 > a[href*="docId"])',
-    resultTitle: 'h4 a',
-    resultCaseNo: 'div:nth-child(2) > div:nth-child(2)',  // 案号在第二行第二个div
-    resultCourt: 'div:nth-child(2) > div:first-child',   // 法院在第二行第一个div
-    resultDate: 'div:nth-child(2) > div:nth-child(3)',    // 日期在第二行第三个div
-    resultType: 'div:first-child > div:nth-child(2)',     // 类型标签
+    // 搜索结果 - 基于2026年1月3日实测页面结构更新
+    // 每个结果项是一个 .LM_list 容器
+    resultList: '.LM_list',                     // 结果容器
+    resultTitle: 'h4 a.caseName',               // 标题链接
+    resultCourt: '.slfyName',                   // 法院名称（在 .list_subtitle 中）
+    resultCaseNo: '.ah',                        // 案号
+    resultDate: '.cprq',                        // 裁判日期
+    resultType: '.labelTwo',                    // 案件类型（在 .List_label 中）
+    resultDocIdInput: 'input.ListSelect',       // docId 在 data-value 属性中
 
     // 分页 - 基于实际页面结构
-    pagination: 'div:has(> a:text("下一页"))',
+    pagination: '.pagination, .page-nav',
     pageNumber: 'a[href="javascript:;"]',
-    nextPage: 'a:text("下一页")',
-    prevPage: 'a:text("上一页")',
-    totalCount: 'div:text-matches("共检索到.*篇文书")',
+    nextPage: 'a:has-text("下一页")',
+    prevPage: 'a:has-text("上一页")',
+    totalCount: ':text("共检索到")',
 
-    // 筛选条件
+    // 筛选条件 - 基于左侧筛选树结构
     filterCaseType: '.case-type-filter, [data-filter="caseType"]',
     filterCourtLevel: '.court-level-filter, [data-filter="courtLevel"]',
     filterDateRange: '.date-range-filter, [data-filter="dateRange"]',
@@ -116,7 +117,7 @@ const SELECTORS = {
     documentContent: '.content, .ws-content, .document-content, #content',
     documentTitle: '.title, h1, .ws-title',
     documentCaseNo: '.case-no, .ah, .caseNo',
-    documentCourt: '.court, .fy, .courtName',
+    documentCourt: '.court, .fy, .courtName, .slfyName',
     documentDate: '.date, .cprq, .judgeDate',
     documentParties: '.parties, .dsr, .party-info',
     documentJudges: '.judges, .spry, .judge-info',
@@ -184,37 +185,51 @@ export class PageOperator {
     async searchDocuments(params: SearchParams): Promise<SearchResponse> {
         const { keyword, filters, page = 1, pageSize = 20 } = params;
 
+        console.error(`[DEBUG] searchDocuments: 开始搜索 keyword="${keyword}", page=${page}, pageSize=${pageSize}`);
+
         // 导航到搜索页面
+        console.error(`[DEBUG] searchDocuments: 导航到 ${this.config.searchUrl}`);
         await this.page.goto(this.config.searchUrl, { waitUntil: 'domcontentloaded' });
         await this.waitForPageLoad();
+        console.error('[DEBUG] searchDocuments: 页面加载完成');
 
         // 检查是否需要登录
         if (await this.checkLoginRequired()) {
+            console.error('[DEBUG] searchDocuments: 需要登录');
             throw new AuthRequiredError('需要登录才能搜索文书');
         }
+        console.error('[DEBUG] searchDocuments: 已登录，继续搜索');
 
         // 输入搜索关键词
+        console.error('[DEBUG] searchDocuments: 输入关键词');
         await this.inputSearchKeyword(keyword);
 
         // 应用筛选条件
         if (filters) {
+            console.error('[DEBUG] searchDocuments: 应用筛选条件');
             await this.applyFilters(filters);
         }
 
         // 点击搜索按钮
+        console.error('[DEBUG] searchDocuments: 点击搜索按钮');
         await this.clickSearchButton();
 
         // 等待搜索结果加载
+        console.error('[DEBUG] searchDocuments: 等待搜索结果');
         await this.waitForSearchResults();
 
         // 如果不是第一页，翻到指定页
         if (page > 1) {
+            console.error(`[DEBUG] searchDocuments: 翻到第 ${page} 页`);
             await this.goToPage(page);
         }
 
         // 解析搜索结果
+        console.error('[DEBUG] searchDocuments: 解析搜索结果');
         const documents = await this.parseSearchResults();
         const total = await this.getTotalCount();
+
+        console.error(`[DEBUG] searchDocuments: 完成！total=${total}, documents.length=${documents.length}`);
 
         return {
             total,
@@ -446,14 +461,46 @@ export class PageOperator {
 
     /**
      * 等待搜索结果加载
+     * 增加URL检测：如果被重定向到登录页，抛出认证错误
      */
     private async waitForSearchResults(): Promise<void> {
+        // 等待页面导航完成
+        await this.page.waitForLoadState('domcontentloaded', { timeout: this.config.loadTimeout });
+        console.error('[DEBUG] waitForSearchResults: domcontentloaded 完成');
+        
+        // 等待网络空闲（搜索结果通常需要异步加载）
+        await this.page.waitForLoadState('networkidle', { timeout: this.config.loadTimeout }).catch(() => { });
+        console.error('[DEBUG] waitForSearchResults: networkidle 完成');
+        
+        // 检测是否被重定向到登录页
+        const currentUrl = this.page.url();
+        console.error(`[DEBUG] waitForSearchResults: 当前URL = ${currentUrl}`);
+        
+        if (currentUrl.includes('181010CARHS5BS3C')) {
+            // 181010CARHS5BS3C 是登录页面的特征路径
+            throw new AuthRequiredError('搜索需要登录，请先调用 login_qrcode 获取二维码并扫码登录');
+        }
+
         try {
+            // 等待 .LM_list 结果容器出现
+            console.error(`[DEBUG] waitForSearchResults: 等待选择器 "${SELECTORS.resultList}"`);
             await this.page.waitForSelector(SELECTORS.resultList, {
                 timeout: this.config.elementTimeout,
             });
-        } catch {
-            // 可能没有结果，不抛出错误
+            console.error('[DEBUG] waitForSearchResults: 找到结果容器');
+        } catch (error) {
+            console.error(`[DEBUG] waitForSearchResults: 等待结果容器失败 - ${error}`);
+            // 可能没有结果，检查是否显示了总数信息
+            try {
+                // 检查是否有 "共检索到" 文本
+                await this.page.waitForSelector(':text("共检索到")', {
+                    timeout: 3000,
+                });
+                console.error('[DEBUG] waitForSearchResults: 找到总数文本');
+            } catch {
+                console.error('[DEBUG] waitForSearchResults: 未找到总数文本');
+                // 确实没有结果，不抛出错误
+            }
         }
     }
 
@@ -464,66 +511,105 @@ export class PageOperator {
     private async parseSearchResults(): Promise<DocumentSummary[]> {
         const results: DocumentSummary[] = [];
 
+        console.error(`[DEBUG] parseSearchResults: 使用选择器 "${SELECTORS.resultList}"`);
         const items = await this.page.$$(SELECTORS.resultList);
+        console.error(`[DEBUG] parseSearchResults: 找到 ${items.length} 个结果项`);
 
-        for (const item of items) {
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (!item) {
+                console.error(`[DEBUG] parseSearchResults: 结果 ${i + 1} 为 undefined，跳过`);
+                continue;
+            }
             try {
                 const summary = await this.parseResultItem(item);
                 if (summary) {
+                    console.error(`[DEBUG] parseSearchResults: 结果 ${i + 1} 解析成功 - ${summary.案件名称.substring(0, 30)}...`);
                     results.push(summary);
+                } else {
+                    console.error(`[DEBUG] parseSearchResults: 结果 ${i + 1} 解析返回 null`);
                 }
-            } catch {
+            } catch (error) {
+                console.error(`[DEBUG] parseSearchResults: 结果 ${i + 1} 解析失败 - ${error}`);
                 // 解析单个结果失败时继续处理其他结果
             }
         }
 
+        console.error(`[DEBUG] parseSearchResults: 总共解析成功 ${results.length} 个结果`);
         return results;
     }
 
     /**
      * 解析单个搜索结果项
+     * 基于2026年1月3日实测的页面结构：
+     * - 每个结果项是 .LM_list 容器
+     * - 包含：.List_label(类型)、.list_title(标题)、.list_subtitle(法院/案号/日期)、.list_reason(摘要)
+     * - 详情页链接格式：../181107ANFZ0BXSK4/index.html?docId=xxx
      */
     private async parseResultItem(item: ReturnType<Page['$']> extends Promise<infer T> ? T : never): Promise<DocumentSummary | null> {
-        if (!item) return null;
-
-        const getText = async (selector: string): Promise<string> => {
-            const element = await item.$(selector);
-            if (element) {
-                const text = await element.textContent();
-                return text?.trim() ?? '';
-            }
-            return '';
-        };
+        if (!item) {
+            console.error('[DEBUG] parseResultItem: item 为 null');
+            return null;
+        }
 
         const getDocId = async (): Promise<string> => {
-            // 尝试从链接或data属性获取文书ID
-            const link = await item.$('a[href*="docId"], a[data-docid]');
+            // 方法1: 从 input.ListSelect 的 data-value 属性获取
+            const docIdInput = await item.$(SELECTORS.resultDocIdInput);
+            if (docIdInput) {
+                const dataValue = await docIdInput.getAttribute('data-value');
+                if (dataValue) {
+                    console.error(`[DEBUG] parseResultItem: docId from input = ${dataValue.substring(0, 30)}...`);
+                    return dataValue;
+                }
+            }
+            
+            // 方法2: 从标题链接获取文书ID (链接格式: ../181107ANFZ0BXSK4/index.html?docId=xxx)
+            const link = await item.$(SELECTORS.resultTitle);
             if (link) {
                 const href = await link.getAttribute('href');
-                const docIdMatch = href?.match(/docId=([^&]+)/);
-                if (docIdMatch && docIdMatch[1]) return docIdMatch[1];
-
-                const dataDocId = await link.getAttribute('data-docid');
-                if (dataDocId) return dataDocId;
+                if (href) {
+                    const docIdMatch = href.match(/docId=([^&]+)/);
+                    if (docIdMatch && docIdMatch[1]) {
+                        console.error(`[DEBUG] parseResultItem: docId from href = ${docIdMatch[1].substring(0, 30)}...`);
+                        return docIdMatch[1];
+                    }
+                }
             }
-
-            // 尝试从item本身获取
-            const dataId = await item.getAttribute('data-id') || await item.getAttribute('data-docid');
-            if (dataId) return dataId;
-
             // 生成临时ID
+            console.error('[DEBUG] parseResultItem: 使用临时 docId');
             return `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         };
 
+        // 获取案件名称（标题）- 使用 h4 a.caseName
+        const titleElement = await item.$(SELECTORS.resultTitle);
+        const 案件名称 = titleElement ? (await titleElement.textContent())?.trim() ?? '' : '';
+        console.error(`[DEBUG] parseResultItem: 标题选择器 "${SELECTORS.resultTitle}" -> "${案件名称.substring(0, 30)}..."`);
+
+        // 获取案件类型 - 使用 .labelTwo
+        const typeElement = await item.$(SELECTORS.resultType);
+        const 案件类型 = typeElement ? (await typeElement.textContent())?.trim() ?? '' : '';
+        console.error(`[DEBUG] parseResultItem: 类型选择器 "${SELECTORS.resultType}" -> "${案件类型}"`);
+
+        // 获取法院名称 - 使用 .slfyName
+        const courtElement = await item.$(SELECTORS.resultCourt);
+        const 法院名称 = courtElement ? (await courtElement.textContent())?.trim() ?? '' : '';
+        console.error(`[DEBUG] parseResultItem: 法院选择器 "${SELECTORS.resultCourt}" -> "${法院名称}"`);
+
+        // 获取案号 - 使用 .ah
+        const caseNoElement = await item.$(SELECTORS.resultCaseNo);
+        const 案号 = caseNoElement ? (await caseNoElement.textContent())?.trim() ?? '' : '';
+        console.error(`[DEBUG] parseResultItem: 案号选择器 "${SELECTORS.resultCaseNo}" -> "${案号}"`);
+
+        // 获取裁判日期 - 使用 .cprq
+        const dateElement = await item.$(SELECTORS.resultDate);
+        const 裁判日期 = dateElement ? (await dateElement.textContent())?.trim() ?? '' : '';
+        console.error(`[DEBUG] parseResultItem: 日期选择器 "${SELECTORS.resultDate}" -> "${裁判日期}"`);
+
         const 文书ID = await getDocId();
-        const 案件名称 = await getText(SELECTORS.resultTitle);
-        const 案号 = await getText(SELECTORS.resultCaseNo);
-        const 法院名称 = await getText(SELECTORS.resultCourt);
-        const 裁判日期 = await getText(SELECTORS.resultDate);
-        const 案件类型 = await getText(SELECTORS.resultType);
 
         // 验证必需字段
         if (!案件名称 && !案号) {
+            console.error('[DEBUG] parseResultItem: 案件名称和案号都为空，返回 null');
             return null;
         }
 
@@ -539,15 +625,25 @@ export class PageOperator {
 
     /**
      * 获取搜索结果总数
+     * 页面显示格式: "共检索到 56758461 篇文书，显示前600条"
      */
     private async getTotalCount(): Promise<number> {
         try {
-            const totalElement = await this.page.$(SELECTORS.totalCount);
-            if (totalElement) {
-                const text = await totalElement.textContent();
-                const match = text?.match(/\d+/);
-                if (match) {
-                    return parseInt(match[0], 10);
+            // 查找包含 "共检索到" 文本的元素
+            const pageContent = await this.page.content();
+            const match = pageContent.match(/共检索到\s*(\d+)/);
+            if (match && match[1]) {
+                return parseInt(match[1], 10);
+            }
+            
+            // 备选：使用 locator 查找
+            const totalLocator = this.page.locator(':text("共检索到")');
+            const count = await totalLocator.count();
+            if (count > 0) {
+                const text = await totalLocator.first().textContent();
+                const numMatch = text?.match(/\d+/);
+                if (numMatch) {
+                    return parseInt(numMatch[0], 10);
                 }
             }
         } catch {
