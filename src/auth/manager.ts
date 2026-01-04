@@ -229,7 +229,16 @@ export class AuthManager {
      */
     async checkLoginStatus(): Promise<AuthStatus> {
         // 首先检查本地Session是否有效
-        const hasValidSession = await this.sessionStore.hasValidSession();
+        let hasValidSession = await this.sessionStore.hasValidSession();
+
+        // 如果本地session无效，尝试从运行中的浏览器恢复
+        if (!hasValidSession) {
+            const recovered = await this.tryRecoverSessionFromBrowser();
+            if (recovered) {
+                logToFile('[DEBUG] checkLoginStatus: 从浏览器恢复session成功');
+                hasValidSession = true;
+            }
+        }
 
         if (!hasValidSession) {
             return {
@@ -263,6 +272,70 @@ export class AuthManager {
             消息: '已登录',
             剩余有效时间: remainingTTL,
         };
+    }
+
+    /**
+     * 尝试从运行中的浏览器恢复Session到本地文件
+     * 当本地session文件被删除但浏览器仍处于登录状态时使用
+     * @returns 是否成功恢复
+     */
+    private async tryRecoverSessionFromBrowser(): Promise<boolean> {
+        // 检查浏览器context是否存在
+        if (!this.context) {
+            logToFile('[DEBUG] tryRecoverSessionFromBrowser: 浏览器context不存在，无法恢复');
+            return false;
+        }
+
+        try {
+            // 从浏览器获取cookies
+            const browserCookies = await this.context.cookies('https://wenshu.court.gov.cn');
+            logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 从浏览器获取到 ${browserCookies.length} 个cookies`);
+            
+            if (browserCookies.length === 0) {
+                // 尝试获取所有cookies
+                const allCookies = await this.context.cookies();
+                logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 获取所有cookies共 ${allCookies.length} 个`);
+                
+                if (allCookies.length === 0) {
+                    return false;
+                }
+                
+                // 检查是否包含关键cookie
+                const hasKeySessionCookie = allCookies.some(c =>
+                    c.name === 'SESSION' || c.name === 'HOLDONKEY'
+                );
+                
+                if (!hasKeySessionCookie) {
+                    logToFile('[DEBUG] tryRecoverSessionFromBrowser: 浏览器中没有关键cookie，无法恢复');
+                    return false;
+                }
+                
+                // 恢复session到文件
+                const cookieInfos: CookieInfo[] = convertPlaywrightCookies(allCookies);
+                await this.sessionStore.saveSession(cookieInfos);
+                logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 已从浏览器恢复 ${cookieInfos.length} 个cookies到session文件`);
+                return true;
+            }
+            
+            // 检查是否包含关键cookie
+            const hasKeySessionCookie = browserCookies.some(c =>
+                c.name === 'SESSION' || c.name === 'HOLDONKEY'
+            );
+            
+            if (!hasKeySessionCookie) {
+                logToFile('[DEBUG] tryRecoverSessionFromBrowser: 浏览器中没有关键cookie，无法恢复');
+                return false;
+            }
+            
+            // 恢复session到文件
+            const cookieInfos: CookieInfo[] = convertPlaywrightCookies(browserCookies);
+            await this.sessionStore.saveSession(cookieInfos);
+            logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 已从浏览器恢复 ${cookieInfos.length} 个cookies到session文件`);
+            return true;
+        } catch (error) {
+            logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 恢复失败: ${error}`);
+            return false;
+        }
     }
 
     /**
