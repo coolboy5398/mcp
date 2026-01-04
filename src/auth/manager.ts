@@ -159,6 +159,11 @@ export class AuthManager {
             browserTimeout: config?.browserTimeout ?? DEFAULT_CONFIG.browserTimeout,
             pageTimeout: config?.pageTimeout ?? DEFAULT_CONFIG.pageTimeout,
         };
+        
+        // 初始化日志文件路径
+        const sessionPath = config?.sessionConfig?.sessionPath ?? './session-data';
+        setLogFilePath(sessionPath);
+        logToFile('[DEBUG] AuthManager 初始化完成');
     }
 
     /**
@@ -579,20 +584,37 @@ export class AuthManager {
         }
 
         try {
-            // 获取所有Cookies
-            const cookies = await this.context.cookies();
-            logToFile(`[DEBUG] saveCurrentSession: 获取到 ${cookies.length} 个cookies`);
+            // 获取裁判文书网相关的Cookies（指定URL以确保获取正确域的cookies）
+            const cookies = await this.context.cookies('https://wenshu.court.gov.cn');
+            logToFile(`[DEBUG] saveCurrentSession: 从wenshu.court.gov.cn获取到 ${cookies.length} 个cookies`);
             
-            // 打印关键cookie信息（用于调试）
-            for (const cookie of cookies) {
-                logToFile(`[DEBUG] saveCurrentSession: cookie "${cookie.name}" domain="${cookie.domain}"`);
+            // 如果没有获取到cookies，尝试获取所有cookies
+            let allCookies = cookies;
+            if (cookies.length === 0) {
+                logToFile('[DEBUG] saveCurrentSession: 指定URL未获取到cookies，尝试获取所有cookies');
+                allCookies = await this.context.cookies();
+                logToFile(`[DEBUG] saveCurrentSession: 获取到所有cookies共 ${allCookies.length} 个`);
             }
             
-            const cookieInfos: CookieInfo[] = convertPlaywrightCookies(cookies);
+            // 打印关键cookie信息（用于调试）
+            for (const cookie of allCookies) {
+                logToFile(`[DEBUG] saveCurrentSession: cookie "${cookie.name}" domain="${cookie.domain}" value="${cookie.value.substring(0, 20)}..."`);
+            }
+            
+            if (allCookies.length === 0) {
+                logToFile('[WARNING] saveCurrentSession: 没有获取到任何cookies！');
+                return;
+            }
+            
+            const cookieInfos: CookieInfo[] = convertPlaywrightCookies(allCookies);
 
             // 保存到SessionStore
             await this.sessionStore.saveSession(cookieInfos);
             logToFile(`[DEBUG] saveCurrentSession: 已保存 ${cookieInfos.length} 个cookies到session文件`);
+            
+            // 验证保存是否成功
+            const savedCookies = await this.sessionStore.getCookies();
+            logToFile(`[DEBUG] saveCurrentSession: 验证保存结果，读取到 ${savedCookies.length} 个cookies`);
         } catch (error) {
             logToFile(`保存Session失败: ${error}`);
             throw error;
