@@ -95,7 +95,7 @@ function registerTools(server: McpServer, authManager: AuthManager): void {
     server.registerTool(
         'login_qrcode',
         {
-            description: '获取支付宝扫码登录的二维码图片。返回Base64编码的二维码图片，用户需要使用支付宝扫码登录。',
+            description: '获取支付宝扫码登录的二维码图片（首选登录方式）。返回Base64编码的二维码图片，用户需要使用支付宝扫码登录。',
         },
         async () => {
             const result = await authTools.loginQRCode();
@@ -146,7 +146,7 @@ function registerTools(server: McpServer, authManager: AuthManager): void {
     server.registerTool(
         'login_with_browser',
         {
-            description: '弹出浏览器窗口进行登录。适用于本地开发环境，会弹出浏览器窗口让用户直接扫码登录。',
+            description: '弹出浏览器窗口进行登录（备用方式，仅在无法使用 login_qrcode 时使用）。适用于本地开发环境，会弹出浏览器窗口让用户直接扫码登录。',
             inputSchema: {
                 超时秒数: z.number().min(10).max(300).optional().default(180)
                     .describe('等待超时时间（秒），默认180秒，范围10-300秒'),
