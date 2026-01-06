@@ -126,9 +126,11 @@ const DEFAULT_CONFIG: Required<Omit<AuthManagerConfig, 'sessionConfig'>> = {
  */
 const QR_CODE_SELECTORS = {
     /** 二维码图片选择器 */
-    qrCodeImage: 'img[id*="qrcode"], img[class*="qrcode"], .qrcode img, #qrcode',
+    qrCodeImage: '#alipay-qrcode, img[src*="alipay.com"], img[id*="qrcode"], img[class*="qrcode"]',
     /** 二维码容器选择器 */
     qrCodeContainer: '.qrcode-container, .login-qrcode, [class*="qrcode"]',
+    /** 支付宝二维码精确选择器 */
+    alipayQRCode: '#alipay-qrcode',
     /** 登录成功后的用户信息选择器 */
     userInfo: '.user-info, .username, [class*="user-name"], .login-user',
     /** 登录按钮选择器 */
@@ -451,22 +453,46 @@ export class AuthManager {
         // 点击支付宝图标触发二维码显示
         await this.clickAlipayIcon();
 
-        // 等待二维码出现
-        await this.page.waitForTimeout(3000);
+        // 获取frame
+        const frame = await this.getLoginFrame();
+
+        // 显式等待支付宝二维码出现（最多等待10秒）
+        try {
+            logToFile('[DEBUG] 等待支付宝二维码元素出现...');
+            // 优先等待精确的ID
+            await frame.waitForSelector(QR_CODE_SELECTORS.alipayQRCode, { timeout: 5000, state: 'visible' });
+            logToFile('[DEBUG] 支付宝二维码元素已出现');
+        } catch (e) {
+            logToFile(`[DEBUG] 等待精确二维码超时，尝试等待通用二维码: ${e}`);
+            // 降级：等待通用二维码
+            try {
+                await frame.waitForSelector(QR_CODE_SELECTORS.qrCodeImage, { timeout: 5000, state: 'visible' });
+            } catch (e2) {
+                logToFile(`[DEBUG] 等待通用二维码也超时了: ${e2}`);
+            }
+        }
+
+        // 稍微等待渲染完成
+        await this.page.waitForTimeout(1000);
 
         // 截取二维码区域或整个页面
         let qrCodeBase64: string;
 
         try {
-            const frame = await this.getLoginFrame();
-
             // 尝试找到二维码元素并截图
-            const qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
-                || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
+            // 优先尝试精确选择器
+            let qrCodeElement = await frame.$(QR_CODE_SELECTORS.alipayQRCode);
+            
+            if (!qrCodeElement) {
+                // 尝试通用选择器
+                qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
+                    || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
+            }
 
-            if (qrCodeElement) {
+            if (qrCodeElement && await qrCodeElement.isVisible()) {
                 const screenshot = await qrCodeElement.screenshot({ type: 'png' });
                 qrCodeBase64 = screenshot.toString('base64');
+                logToFile('[DEBUG] 成功截取二维码元素');
             } else {
                 // 如果找不到二维码元素，截取整个页面
                 const screenshot = await this.page.screenshot({ type: 'png' });
@@ -639,9 +665,16 @@ export class AuthManager {
         // 等待用户手动扫码登录
         const result = await this.waitForLogin(timeoutSeconds);
 
-        // 登录完成后关闭浏览器
+        // 登录成功后切换到无头模式重新初始化浏览器
+        // 不再直接关闭浏览器，而是保持session并重新初始化
         if (result.成功) {
+            logToFile('[DEBUG] loginWithBrowser: 登录成功，切换到无头模式');
+            // 保存当前session后再关闭有头浏览器
+            await this.saveCurrentSession();
             await this.closeBrowser();
+            // 重新以无头模式初始化，这样后续操作可以正常进行
+            await this.initBrowser(true);
+            logToFile('[DEBUG] loginWithBrowser: 已切换到无头模式');
         }
 
         return result;
@@ -696,8 +729,40 @@ export class AuthManager {
 
     /**
      * 获取当前浏览器页面（供其他模块使用）
+     * 包含页面状态检测和自动恢复逻辑
      */
     async getPage(): Promise<Page> {
+        // 检查浏览器和页面是否仍然有效
+        if (this.page) {
+            try {
+                // 尝试执行一个简单操作来验证页面是否仍然有效
+                await this.page.url();
+            } catch (error) {
+                // 页面已失效，需要重新初始化
+                logToFile(`[DEBUG] getPage: 页面已失效，需要重新初始化: ${error}`);
+                this.page = null;
+                this.context = null;
+                this.browser = null;
+            }
+        }
+
+        // 检查浏览器是否仍然连接
+        if (this.browser) {
+            try {
+                if (!this.browser.isConnected()) {
+                    logToFile('[DEBUG] getPage: 浏览器已断开连接，需要重新初始化');
+                    this.page = null;
+                    this.context = null;
+                    this.browser = null;
+                }
+            } catch (error) {
+                logToFile(`[DEBUG] getPage: 检查浏览器连接失败: ${error}`);
+                this.page = null;
+                this.context = null;
+                this.browser = null;
+            }
+        }
+
         await this.initBrowser();
 
         if (!this.page) {
