@@ -180,7 +180,7 @@ export const loginStatusToolDefinition = {
  */
 export const loginQRCodeToolDefinition = {
     name: 'login_qrcode',
-    description: '获取支付宝扫码登录的二维码图片。返回Base64编码的二维码图片，用户需要使用支付宝扫码登录。',
+    description: '获取支付宝扫码登录的二维码图片（首选登录方式）。返回Base64编码的二维码图片，用户需要使用支付宝扫码登录。',
     inputSchema: {
         type: 'object' as const,
         properties: {},
@@ -212,7 +212,7 @@ export const waitLoginToolDefinition = {
  */
 export const loginWithBrowserToolDefinition = {
     name: 'login_with_browser',
-    description: '弹出浏览器窗口进行登录。适用于本地开发环境，会弹出浏览器窗口让用户直接扫码登录。',
+    description: '弹出浏览器窗口进行登录（备用方式，仅在无法使用 login_qrcode 时使用）。适用于本地开发环境，会弹出浏览器窗口让用户直接扫码登录。',
     inputSchema: {
         type: 'object' as const,
         properties: {
