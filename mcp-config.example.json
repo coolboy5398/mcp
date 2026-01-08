@@ -1,9 +1,10 @@
 {
     "mcpServers": {
         "court-document": {
-            "command": "node",
+            "command": "npx",
             "args": [
-                "D:/开发/MCP/裁判文书网mcp/dist/server.js"
+                "-y",
+                "D:/开发/MCP/裁判文书网mcp"
             ],
             "env": {
                 "SESSION_PATH": "D:/开发/MCP/裁判文书网mcp/session-data",
