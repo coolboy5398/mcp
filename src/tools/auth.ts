@@ -36,7 +36,7 @@ export interface LoginQRCodeOutput {
  * 等待登录输入Schema
  */
 export const WaitLoginInputSchema = z.object({
-    超时秒数: z.number().min(10).max(300).optional().default(120),
+    timeoutSeconds: z.number().min(10).max(300).optional().default(120),
 });
 
 export type WaitLoginInput = z.infer<typeof WaitLoginInputSchema>;
@@ -53,7 +53,7 @@ export interface WaitLoginOutput {
  * 浏览器登录输入Schema
  */
 export const BrowserLoginInputSchema = z.object({
-    超时秒数: z.number().min(10).max(300).optional().default(180),
+    timeoutSeconds: z.number().min(10).max(300).optional().default(180),
 });
 
 export type BrowserLoginInput = z.infer<typeof BrowserLoginInputSchema>;
@@ -116,7 +116,7 @@ export class AuthTools {
      * 需求 7.3: 当用户扫码完成认证后，文书服务器应将认证Token存储到本地
      */
     async waitLogin(input: WaitLoginInput): Promise<WaitLoginOutput> {
-        const result: WaitLoginResult = await this.authManager.waitForLogin(input.超时秒数);
+        const result: WaitLoginResult = await this.authManager.waitForLogin(input.timeoutSeconds);
         return {
             成功: result.成功,
             消息: result.消息,
@@ -128,7 +128,7 @@ export class AuthTools {
      * 用于本地开发和首次登录场景
      */
     async loginWithBrowser(input: BrowserLoginInput): Promise<BrowserLoginOutput> {
-        const result: WaitLoginResult = await this.authManager.loginWithBrowser(input.超时秒数);
+        const result: WaitLoginResult = await this.authManager.loginWithBrowser(input.timeoutSeconds);
         return {
             成功: result.成功,
             消息: result.消息,
@@ -197,7 +197,7 @@ export const waitLoginToolDefinition = {
     inputSchema: {
         type: 'object' as const,
         properties: {
-            超时秒数: {
+            timeoutSeconds: {
                 type: 'number',
                 description: '等待超时时间（秒），默认120秒，范围10-300秒',
                 default: 120,
@@ -216,7 +216,7 @@ export const loginWithBrowserToolDefinition = {
     inputSchema: {
         type: 'object' as const,
         properties: {
-            超时秒数: {
+            timeoutSeconds: {
                 type: 'number',
                 description: '等待超时时间（秒），默认180秒，范围10-300秒',
                 default: 180,

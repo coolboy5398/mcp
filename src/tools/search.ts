@@ -35,6 +35,8 @@ export const SearchDocumentsInputSchema = z.object({
     keyword: z.string().min(1, '搜索关键词不能为空'),
     caseType: z.string().optional(),
     courtLevel: z.string().optional(),
+    province: z.string().optional(),
+    courtName: z.string().optional(),
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为YYYY-MM-DD').optional(),
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为YYYY-MM-DD').optional(),
     page: z.number().int().min(1).optional().default(1),
@@ -163,7 +165,7 @@ export class SearchTools {
      * 需求 2.4: 组合多个筛选条件时使用AND逻辑
      */
     private buildFilters(input: SearchDocumentsInput): SearchFilters | undefined {
-        const hasFilters = input.caseType || input.courtLevel || input.startDate || input.endDate;
+        const hasFilters = input.caseType || input.courtLevel || input.startDate || input.endDate || input.province || input.courtName;
 
         if (!hasFilters) {
             return undefined;
@@ -174,6 +176,8 @@ export class SearchTools {
             courtLevel: input.courtLevel as CourtLevel | undefined,
             startDate: input.startDate,
             endDate: input.endDate,
+            province: input.province,
+            courtName: input.courtName,
         };
     }
 
@@ -190,7 +194,7 @@ export class SearchTools {
  */
 export const searchDocumentsToolDefinition = {
     name: 'search_documents',
-    description: `搜索裁判文书。支持关键词搜索和多种筛选条件（案件类型、法院级别、日期范围）。
+    description: `搜索裁判文书。支持关键词搜索和多种筛选条件（案件类型、法院级别、日期范围、法院省份、审理法院）。
     
 使用前请确保已登录（调用 login_status 检查状态，未登录则调用 login_qrcode 获取二维码）。
 
@@ -211,6 +215,14 @@ export const searchDocumentsToolDefinition = {
                 type: 'string',
                 description: '法院级别筛选。可选值: zuigao(最高人民法院), gaoji(高级人民法院), zhongji(中级人民法院), jiceng(基层人民法院)',
                 enum: ['zuigao', 'gaoji', 'zhongji', 'jiceng'],
+            },
+            province: {
+                type: 'string',
+                description: '法院省份筛选，如：北京市、河北省、黑龙江省',
+            },
+            courtName: {
+                type: 'string',
+                description: '审理法院名称筛选，如：北京市高级人民法院',
             },
             startDate: {
                 type: 'string',

@@ -32,6 +32,10 @@ export interface SearchFilters {
     startDate?: string;
     /** 结束日期 (YYYY-MM-DD) */
     endDate?: string;
+    /** 法院省份筛选 */
+    province?: string;
+    /** 审理法院名称筛选 */
+    courtName?: string;
 }
 
 /**
@@ -200,23 +204,44 @@ export class PageOperator {
         }
         console.error('[DEBUG] searchDocuments: 已登录，继续搜索');
 
-        // 输入搜索关键词
+        // 1. 输入搜索关键词 (最先执行，防止后续操作被重置)
         console.error('[DEBUG] searchDocuments: 输入关键词');
         await this.inputSearchKeyword(keyword);
+        // 按 ESC 键以关闭可能出现的联想下拉框，避免遮挡
+        await this.page.keyboard.press('Escape');
 
-        // 应用筛选条件
+        // 2. 如果有法院名称或其他高级筛选，打开高级检索面板
+        // 注意：法院名称现在作为高级筛选的一部分处理
+        if (filters?.courtName) {
+            console.error('[DEBUG] searchDocuments: 打开高级检索面板');
+            await this.openAdvancedSearch();
+            
+            console.error(`[DEBUG] searchDocuments: 输入法院名称 "${filters.courtName}"`);
+            await this.inputCourtName(filters.courtName);
+        }
+
+        // 3. 应用其他筛选条件 (包括法院层级等)
         if (filters) {
             console.error('[DEBUG] searchDocuments: 应用筛选条件');
             await this.applyFilters(filters);
         }
 
-        // 点击搜索按钮
+        // 4. 点击搜索按钮
         console.error('[DEBUG] searchDocuments: 点击搜索按钮');
         await this.clickSearchButton();
 
-        // 等待搜索结果加载
+        // 5. 等待搜索结果加载
         console.error('[DEBUG] searchDocuments: 等待搜索结果');
         await this.waitForSearchResults();
+
+        // [新增] 如果有省份筛选，在结果页进行二次筛选
+        if (filters?.province) {
+            console.error(`[DEBUG] searchDocuments: 应用省份筛选 "${filters.province}"`);
+            await this.applyProvinceFilter(filters.province);
+            // 省份筛选后需要再次等待结果刷新
+            console.error('[DEBUG] searchDocuments: 等待省份筛选结果刷新');
+            await this.waitForSearchResults();
+        }
 
         // 如果不是第一页，翻到指定页
         if (page > 1) {
@@ -318,7 +343,16 @@ export class PageOperator {
      * 裁判文书网的搜索按钮是一个div元素，需要特殊处理
      */
     private async clickSearchButton(): Promise<void> {
-        // 策略1: 使用getByRole定位搜索区域附近的可点击元素
+        // Strategy 1: Use specific ID found in debug
+        try {
+            const searchBtn = this.page.locator('#searchBtn');
+            if (await searchBtn.count() > 0 && await searchBtn.isVisible()) {
+                await searchBtn.click();
+                return;
+            }
+        } catch {}
+
+        // Strategy 2: Use getByRole near search input定位搜索区域附近的可点击元素
         try {
             // 搜索按钮紧邻搜索框，先定位搜索框再找相邻的搜索按钮
             const searchBtn = this.page.locator('div').filter({ hasText: /^搜索$/ }).first();
@@ -412,26 +446,60 @@ export class PageOperator {
     /**
      * 应用法院级别筛选
      * 需求 2.2: 按法院级别筛选
+     * 修复：网页使用的是 data-val 属性和数字代码 (1=最高, 2=高级, 3=中级, 4=基层)
      */
     private async applyCourtLevelFilter(courtLevel: CourtLevel): Promise<void> {
+        const COURT_LEVEL_MAP: Record<string, string> = {
+            'zuigao': '1',
+            'gaoji': '2',
+            'zhongji': '3',
+            'jiceng': '4'
+        };
+
         try {
-            const filterElement = await this.page.$(SELECTORS.filterCourtLevel);
-            if (filterElement) {
-                await filterElement.click();
-                await this.page.waitForTimeout(500);
-                const option = await this.page.$(`[data-value="${courtLevel}"], [value="${courtLevel}"]`);
-                if (option) {
-                    await option.click();
-                }
+            // 确保面板已打开
+            await this.openAdvancedSearch();
+
+            // 1. 点击“法院层级”下拉框 (#s4) 以展开选项
+            const dropdownTrigger = await this.page.$('#s4');
+            if (dropdownTrigger) {
+                console.error('[DEBUG] applyCourtLevelFilter: 点击法院层级下拉框 #s4');
+                await dropdownTrigger.click();
+                await this.page.waitForTimeout(500); // 等待下拉选项出现
+            } else {
+                console.error('[DEBUG] applyCourtLevelFilter: 未找到法院层级下拉框 #s4');
+                return;
             }
-        } catch {
-            // 筛选失败时忽略
+            
+            // 获取映射值
+            const targetVal = COURT_LEVEL_MAP[courtLevel] || courtLevel;
+            
+            // 2. 选择选项 (在下拉列表中查找)
+            // 优化：限定在 .list-box 内查找，确保不匹配到其他地方
+            const selector = `.list-box li[data-val="${targetVal}"], .list-box li[data-value="${targetVal}"]`;
+            // 等待选项可见
+            try {
+                await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
+                const option = await this.page.$(selector);
+                
+                if (option) {
+                    console.error(`[DEBUG] applyCourtLevelFilter: 点击选项 val=${targetVal}`);
+                    await option.click();
+                    // 等待一下，让点击生效（有些UI可能需要一点反应时间）
+                    await this.page.waitForTimeout(300);
+                } else {
+                    console.error(`[DEBUG] applyCourtLevelFilter: 未找到法院层级选项 "${courtLevel}" (val=${targetVal})`);
+                }
+            } catch (err) {
+                 console.error(`[DEBUG] applyCourtLevelFilter: 等待选项超时或失败 - ${err}`);
+            }
+        } catch (e) {
+            console.error(`[DEBUG] applyCourtLevelFilter: 筛选出错 - ${e}`);
         }
     }
 
     /**
      * 应用日期范围筛选
-     * 需求 2.3: 按日期范围筛选
      */
     private async applyDateRangeFilter(startDate?: string, endDate?: string): Promise<void> {
         try {
@@ -456,6 +524,93 @@ export class PageOperator {
             }
         } catch {
             // 筛选失败时忽略
+        }
+    }
+
+    /**
+     * 打开高级检索面板
+     * 修复：网页使用的是 .advenced-search (拼写错误)
+     */
+    private async openAdvancedSearch(): Promise<void> {
+        try {
+            // 检查是否已经展开（如果有s2输入框且可见）
+            const s2Input = await this.page.$('#s2');
+            if (s2Input && await s2Input.isVisible()) {
+                console.error('[DEBUG] openAdvancedSearch: 高级检索面板已展开');
+                return;
+            }
+
+            // 使用修正后的选择器
+            const advancedBtn = this.page.locator('.advenced-search').first();
+            
+            if (await advancedBtn.count() > 0 && await advancedBtn.isVisible()) {
+                console.error('[DEBUG] openAdvancedSearch: 点击高级检索按钮');
+                await advancedBtn.click();
+                // 等待面板展开动画
+                await this.page.waitForTimeout(1000);
+            } else {
+                 console.error('[DEBUG] openAdvancedSearch: 未找到高级检索按钮 (.advenced-search)');
+            }
+        } catch (e) {
+            console.error(`[DEBUG] openAdvancedSearch: 打开面板失败 - ${e}`);
+        }
+    }
+
+    /**
+     * 输入法院名称 (高级检索)
+     */
+    private async inputCourtName(courtName: string): Promise<void> {
+        const selector = '#s2'; // 确定的ID
+        try {
+            // 等待输入框出现
+            await this.page.waitForSelector(selector, { state: 'visible', timeout: 3000 });
+            await this.page.fill(selector, courtName);
+            
+            // 有时候可能会有联想下拉框遮挡，按一下Tab或者点击空白处
+            await this.page.keyboard.press('Tab');
+        } catch {
+            console.error(`[DEBUG] inputCourtName: 无法找到法院输入框 ${selector}`);
+            // 尝试备用
+            const inputs = await this.page.$$('input[type="text"]');
+            for (const input of inputs) {
+                const placeholder = await input.getAttribute('placeholder');
+                if (placeholder && placeholder.includes('法院')) {
+                    await input.fill(courtName);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * 应用省份筛选 (后置筛选)
+     */
+    private async applyProvinceFilter(province: string): Promise<void> {
+        console.error(`[DEBUG] applyProvinceFilter: 尝试筛选省份 "${province}"`);
+        try {
+            // 省份通常在左侧树形结构中
+            // 选择器可能需要调整以匹配实际页面结构
+            // 优先尝试精确匹配 jstree-anchor
+            const provinceNode = this.page.locator(`.jstree-anchor`).filter({ hasText: new RegExp(`^${province}$`) }).first();
+            
+            // 检查是否存在
+            if (await provinceNode.count() > 0) {
+                await provinceNode.scrollIntoViewIfNeeded();
+                await provinceNode.click();
+                return;
+            }
+
+            // 模糊匹配
+            const roughNode = this.page.locator(`.jstree-anchor:has-text("${province}")`).first();
+            if (await roughNode.count() > 0) {
+                await roughNode.scrollIntoViewIfNeeded();
+                await roughNode.click();
+                return;
+            }
+            
+            console.error(`[DEBUG] applyProvinceFilter: 未找到省份节点 "${province}"`);
+        } catch (e) {
+            console.error(`[DEBUG] applyProvinceFilter: 筛选出错 - ${e}`);
         }
     }
 

@@ -124,7 +124,7 @@ function registerTools(server: McpServer, authManager: AuthManager): void {
         {
             description: '等待用户扫码登录完成。在获取二维码后调用此工具等待用户完成扫码认证。',
             inputSchema: {
-                超时秒数: z.number().min(10).max(300).optional().default(120)
+                timeoutSeconds: z.number().min(10).max(300).optional().default(120)
                     .describe('等待超时时间（秒），默认120秒，范围10-300秒'),
             },
         },
@@ -148,7 +148,7 @@ function registerTools(server: McpServer, authManager: AuthManager): void {
         {
             description: '弹出浏览器窗口进行登录（备用方式，仅在无法使用 login_qrcode 时使用）。适用于本地开发环境，会弹出浏览器窗口让用户直接扫码登录。',
             inputSchema: {
-                超时秒数: z.number().min(10).max(300).optional().default(180)
+                timeoutSeconds: z.number().min(10).max(300).optional().default(180)
                     .describe('等待超时时间（秒），默认180秒，范围10-300秒'),
             },
         },
