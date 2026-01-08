@@ -136,7 +136,7 @@ const QR_CODE_SELECTORS = {
     /** 登录按钮选择器 */
     loginButton: '.login-btn, [class*="login"], button:has-text("登录")',
     /** 支付宝登录图标选择器（点击后显示二维码） */
-    alipayIcon: 'img[alt*="支付宝"], img[src*="alipay"], img[src*="zhifubao"], .alipay-icon, .alipay-login, [class*="alipay"], [title*="支付宝"], a:has(img[alt*="支付宝"])',
+    alipayIcon: '.login-type-item.alipay, img[alt*="支付宝"], img[src*="alipay"], img[src*="zhifubao"], .alipay-icon, .alipay-login, [class*="alipay"], [title*="支付宝"], a:has(img[alt*="支付宝"])',
     /** 支付宝二维码iframe选择器（二维码可能在iframe中） */
     alipayQRCodeIframe: 'iframe[src*="alipay"], iframe[id*="alipay"]',
 };
