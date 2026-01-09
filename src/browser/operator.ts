@@ -28,9 +28,11 @@ export interface SearchFilters {
     caseType?: CaseType;
     /** 法院级别筛选 */
     courtLevel?: CourtLevel;
-    /** 开始日期 (YYYY-MM-DD) */
+    /** 裁判年份筛选 (YYYY)，通过结果页左侧树筛选 */
+    judgmentYear?: string;
+    /** 裁判日期范围起始 (YYYY-MM-DD)，通过高级检索实现 */
     startDate?: string;
-    /** 结束日期 (YYYY-MM-DD) */
+    /** 裁判日期范围结束 (YYYY-MM-DD)，通过高级检索实现 */
     endDate?: string;
     /** 法院省份筛选 */
     province?: string;
@@ -226,7 +228,14 @@ export class PageOperator {
             await this.applyFilters(filters);
         }
 
-        // 4. 点击搜索按钮
+        // 4. [前置筛选] 如果有日期范围参数，通过高级检索面板设置
+        // 注意：日期范围优先于年份筛选
+        if (filters?.startDate || filters?.endDate) {
+            console.error('[DEBUG] searchDocuments: 应用日期范围筛选（高级检索）');
+            await this.applyDateRangeFilter(filters.startDate, filters.endDate);
+        }
+
+        // 5. 点击搜索按钮
         console.error('[DEBUG] searchDocuments: 点击搜索按钮');
         await this.clickSearchButton();
 
@@ -234,12 +243,22 @@ export class PageOperator {
         console.error('[DEBUG] searchDocuments: 等待搜索结果');
         await this.waitForSearchResults();
 
-        // [新增] 如果有省份筛选，在结果页进行二次筛选
+        // [后置筛选] 如果有省份筛选，在结果页进行二次筛选
         if (filters?.province) {
             console.error(`[DEBUG] searchDocuments: 应用省份筛选 "${filters.province}"`);
             await this.applyProvinceFilter(filters.province);
             // 省份筛选后需要再次等待结果刷新
             console.error('[DEBUG] searchDocuments: 等待省份筛选结果刷新');
+            await this.waitForSearchResults();
+        }
+
+        // [后置筛选] 如果有裁判年份筛选且没有日期范围，在结果页进行筛选
+        // 注意：如果已经使用了日期范围，则跳过年份筛选（日期范围优先）
+        if (filters?.judgmentYear && !filters?.startDate && !filters?.endDate) {
+            console.error(`[DEBUG] searchDocuments: 应用裁判年份筛选 "${filters.judgmentYear}"`);
+            await this.applyJudgmentYearFilter(filters.judgmentYear);
+            // 年份筛选后需要再次等待结果刷新
+            console.error('[DEBUG] searchDocuments: 等待年份筛选结果刷新');
             await this.waitForSearchResults();
         }
 
@@ -414,39 +433,68 @@ export class PageOperator {
         if (filters.courtLevel) {
             await this.applyCourtLevelFilter(filters.courtLevel);
         }
-
-        // 应用日期范围筛选
-        if (filters.startDate || filters.endDate) {
-            await this.applyDateRangeFilter(filters.startDate, filters.endDate);
-        }
+        // 注意：裁判年份筛选在 searchDocuments 中作为后置筛选处理
     }
 
     /**
      * 应用案件类型筛选
      * 需求 2.1: 按案件类型筛选
+     * 修复：网页案件类型下拉选项列表ID是 #gjjs_ajlx，触发器是 #s8
+     * 数字代码: 02=刑事, 03=民事, 04=行政, 05=赔偿, 10=执行
      */
     private async applyCaseTypeFilter(caseType: CaseType): Promise<void> {
+        const CASE_TYPE_MAP: Record<string, string> = {
+            'xingshi': '02',   // 刑事案件
+            'minshi': '03',    // 民事案件
+            'xingzheng': '04', // 行政案件
+            'peichang': '05',  // 国家赔偿与司法救助案件
+            'zhixing': '10'    // 执行案件
+        };
+
         try {
-            const filterElement = await this.page.$(SELECTORS.filterCaseType);
-            if (filterElement) {
-                await filterElement.click();
-                // 等待筛选选项出现
-                await this.page.waitForTimeout(500);
-                // 选择对应的案件类型
-                const option = await this.page.$(`[data-value="${caseType}"], [value="${caseType}"]`);
-                if (option) {
-                    await option.click();
-                }
+            // 确保面板已打开
+            await this.openAdvancedSearch();
+
+            // 1. 点击"案件类型"下拉框 (#s8) 以展开选项
+            const dropdownTrigger = await this.page.$('#s8');
+            if (dropdownTrigger) {
+                console.error('[DEBUG] applyCaseTypeFilter: 点击案件类型下拉框 #s8');
+                await dropdownTrigger.click();
+                await this.page.waitForTimeout(500); // 等待下拉选项出现
+            } else {
+                console.error('[DEBUG] applyCaseTypeFilter: 未找到案件类型下拉框 #s8');
+                return;
             }
-        } catch {
-            // 筛选失败时忽略，继续搜索
+            
+            // 获取映射值
+            const targetVal = CASE_TYPE_MAP[caseType] || caseType;
+            
+            // 2. 选择选项 (在案件类型专用的下拉列表 #gjjs_ajlx 中查找)
+            const selector = `#gjjs_ajlx li[data-val="${targetVal}"]`;
+            try {
+                await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
+                const option = await this.page.$(selector);
+                
+                if (option) {
+                    console.error(`[DEBUG] applyCaseTypeFilter: 点击选项 val=${targetVal}`);
+                    await option.click();
+                    await this.page.waitForTimeout(300);
+                } else {
+                    console.error(`[DEBUG] applyCaseTypeFilter: 未找到案件类型选项 "${caseType}" (val=${targetVal})`);
+                }
+            } catch (err) {
+                console.error(`[DEBUG] applyCaseTypeFilter: 等待选项超时或失败 - ${err}`);
+            }
+        } catch (e) {
+            console.error(`[DEBUG] applyCaseTypeFilter: 筛选出错 - ${e}`);
         }
     }
 
     /**
      * 应用法院级别筛选
      * 需求 2.2: 按法院级别筛选
-     * 修复：网页使用的是 data-val 属性和数字代码 (1=最高, 2=高级, 3=中级, 4=基层)
+     * 修复：网页法院层级下拉选项列表ID是 #gjjs_fycj
+     * 数字代码: 1=最高法院, 2=高级法院, 3=中级法院, 4=基层法院
      */
     private async applyCourtLevelFilter(courtLevel: CourtLevel): Promise<void> {
         const COURT_LEVEL_MAP: Record<string, string> = {
@@ -460,7 +508,7 @@ export class PageOperator {
             // 确保面板已打开
             await this.openAdvancedSearch();
 
-            // 1. 点击“法院层级”下拉框 (#s4) 以展开选项
+            // 1. 点击"法院层级"下拉框 (#s4) 以展开选项
             const dropdownTrigger = await this.page.$('#s4');
             if (dropdownTrigger) {
                 console.error('[DEBUG] applyCourtLevelFilter: 点击法院层级下拉框 #s4');
@@ -474,9 +522,8 @@ export class PageOperator {
             // 获取映射值
             const targetVal = COURT_LEVEL_MAP[courtLevel] || courtLevel;
             
-            // 2. 选择选项 (在下拉列表中查找)
-            // 优化：限定在 .list-box 内查找，确保不匹配到其他地方
-            const selector = `.list-box li[data-val="${targetVal}"], .list-box li[data-value="${targetVal}"]`;
+            // 2. 选择选项 (在法院层级专用的下拉列表 #gjjs_fycj 中查找)
+            const selector = `#gjjs_fycj li[data-val="${targetVal}"]`;
             // 等待选项可见
             try {
                 await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
@@ -495,35 +542,6 @@ export class PageOperator {
             }
         } catch (e) {
             console.error(`[DEBUG] applyCourtLevelFilter: 筛选出错 - ${e}`);
-        }
-    }
-
-    /**
-     * 应用日期范围筛选
-     */
-    private async applyDateRangeFilter(startDate?: string, endDate?: string): Promise<void> {
-        try {
-            const filterElement = await this.page.$(SELECTORS.filterDateRange);
-            if (filterElement) {
-                await filterElement.click();
-                await this.page.waitForTimeout(500);
-
-                if (startDate) {
-                    const startInput = await this.page.$('input[name="startDate"], .start-date');
-                    if (startInput) {
-                        await startInput.fill(startDate);
-                    }
-                }
-
-                if (endDate) {
-                    const endInput = await this.page.$('input[name="endDate"], .end-date');
-                    if (endInput) {
-                        await endInput.fill(endDate);
-                    }
-                }
-            }
-        } catch {
-            // 筛选失败时忽略
         }
     }
 
@@ -597,6 +615,8 @@ export class PageOperator {
             if (await provinceNode.count() > 0) {
                 await provinceNode.scrollIntoViewIfNeeded();
                 await provinceNode.click();
+                // 等待筛选标签出现，确认筛选已生效
+                await this.waitForFilterTag(`法院省份：${province}`);
                 return;
             }
 
@@ -605,12 +625,120 @@ export class PageOperator {
             if (await roughNode.count() > 0) {
                 await roughNode.scrollIntoViewIfNeeded();
                 await roughNode.click();
+                // 等待筛选标签出现，确认筛选已生效
+                await this.waitForFilterTag(`法院省份：${province}`);
                 return;
             }
             
             console.error(`[DEBUG] applyProvinceFilter: 未找到省份节点 "${province}"`);
         } catch (e) {
             console.error(`[DEBUG] applyProvinceFilter: 筛选出错 - ${e}`);
+        }
+    }
+
+    /**
+     * 应用裁判年份筛选 (后置筛选)
+     * 在搜索结果页的左侧筛选栏中点击对应年份
+     */
+    private async applyJudgmentYearFilter(year: string): Promise<void> {
+        console.error(`[DEBUG] applyJudgmentYearFilter: 尝试筛选年份 "${year}"`);
+        try {
+            // 年份在左侧树形结构中，格式类似 "2024(278)"
+            // 使用 jstree-anchor 选择器，匹配以年份开头的文本
+            const yearNode = this.page.locator(`.jstree-anchor`).filter({ hasText: new RegExp(`^${year}\\(`) }).first();
+            
+            // 检查是否存在
+            if (await yearNode.count() > 0) {
+                console.error(`[DEBUG] applyJudgmentYearFilter: 找到年份节点，点击中...`);
+                await yearNode.scrollIntoViewIfNeeded();
+                await yearNode.click();
+                // 等待筛选标签出现，确认筛选已生效
+                await this.waitForFilterTag(`裁判年份：${year}`);
+                return;
+            }
+
+            // 备选：尝试精确匹配年份文本
+            const exactNode = this.page.locator(`.jstree-anchor:has-text("${year}")`).first();
+            if (await exactNode.count() > 0) {
+                console.error(`[DEBUG] applyJudgmentYearFilter: 使用备选选择器找到年份节点`);
+                await exactNode.scrollIntoViewIfNeeded();
+                await exactNode.click();
+                // 等待筛选标签出现，确认筛选已生效
+                await this.waitForFilterTag(`裁判年份：${year}`);
+                return;
+            }
+            
+            console.error(`[DEBUG] applyJudgmentYearFilter: 未找到年份节点 "${year}"`);
+        } catch (e) {
+            console.error(`[DEBUG] applyJudgmentYearFilter: 筛选出错 - ${e}`);
+        }
+    }
+
+    /**
+     * 应用日期范围筛选 (前置筛选)
+     * 通过高级检索面板的 cprqStart 和 cprqEnd 输入框实现
+     * 需要在点击搜索按钮之前调用
+     */
+    private async applyDateRangeFilter(startDate?: string, endDate?: string): Promise<void> {
+        if (!startDate && !endDate) {
+            return;
+        }
+        
+        console.error(`[DEBUG] applyDateRangeFilter: 应用日期范围 ${startDate || ''} ~ ${endDate || ''}`);
+        
+        try {
+            // 1. 展开高级检索面板
+            const wrapper = this.page.locator('.advencedWrapper');
+            if (await wrapper.count() > 0) {
+                await wrapper.evaluate(el => {
+                    (el as { style: { display: string } }).style.display = 'block';
+                });
+            }
+            await this.page.waitForTimeout(500);
+            
+            // 2. 填入开始日期
+            if (startDate) {
+                const startInput = this.page.locator('#cprqStart');
+                if (await startInput.count() > 0) {
+                    await startInput.fill(startDate);
+                    console.error(`[DEBUG] applyDateRangeFilter: 已设置开始日期 ${startDate}`);
+                }
+            }
+            
+            // 3. 填入结束日期
+            if (endDate) {
+                const endInput = this.page.locator('#cprqEnd');
+                if (await endInput.count() > 0) {
+                    await endInput.fill(endDate);
+                    console.error(`[DEBUG] applyDateRangeFilter: 已设置结束日期 ${endDate}`);
+                }
+            }
+        } catch (e) {
+            console.error(`[DEBUG] applyDateRangeFilter: 设置日期范围出错 - ${e}`);
+        }
+    }
+
+    /**
+     * 等待筛选标签出现
+     * 筛选成功后，页面顶部会显示已选条件标签，如 "法院省份：北京市"
+     * 通过等待这个标签出现来确认筛选已生效
+     */
+    private async waitForFilterTag(tagText: string): Promise<void> {
+        console.error(`[DEBUG] waitForFilterTag: 等待筛选标签 "${tagText}"`);
+        try {
+            // 等待包含指定文本的标签出现
+            // 标签格式通常是在 .searchCondition 或类似容器中
+            await this.page.waitForSelector(`:text("${tagText}")`, {
+                timeout: 8000,
+                state: 'visible',
+            });
+            console.error(`[DEBUG] waitForFilterTag: 筛选标签 "${tagText}" 已出现`);
+            
+            // 额外等待一小段时间确保结果列表也刷新完成
+            await this.page.waitForTimeout(500);
+        } catch (e) {
+            console.error(`[DEBUG] waitForFilterTag: 等待筛选标签超时 - ${e}`);
+            // 即使标签没出现，也继续执行（可能是页面结构变化）
         }
     }
 

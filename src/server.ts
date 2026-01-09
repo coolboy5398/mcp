@@ -212,21 +212,34 @@ function registerTools(server: McpServer, authManager: AuthManager): void {
     server.registerTool(
         'search_documents',
         {
-            description: `搜索裁判文书。支持关键词搜索和多种筛选条件（案件类型、法院级别、日期范围）。
+            description: `搜索裁判文书。支持关键词搜索和多种筛选条件（案件类型、法院级别、裁判年份/日期范围、法院省份、审理法院）。
 
 使用前请确保已登录（调用 login_status 检查状态，未登录则调用 login_qrcode 获取二维码）。
 
-筛选条件使用AND逻辑组合，即返回的文书必须同时满足所有指定的筛选条件。`,
+筛选条件使用AND逻辑组合，即返回的文书必须同时满足所有指定的筛选条件。
+
+日期筛选说明：
+- judgmentYear: 按整年筛选（如2024），通过结果页左侧树实现
+- startDate/endDate: 按精确日期范围筛选（如2024-01-01至2024-06-30），通过高级检索实现
+- 如果同时指定了judgmentYear和startDate/endDate，优先使用日期范围
+
+注意：关键词应只包含案由或搜索词（如"劳动合同纠纷"），地区信息应通过province参数传递。`,
             inputSchema: {
-                keyword: z.string().min(1).describe('搜索关键词，必填'),
+                keyword: z.string().min(1).describe('搜索关键词（案由或关键词），必填。注意：不要在关键词中包含地区信息，地区应使用province参数'),
                 caseType: z.enum(['xingshi', 'minshi', 'xingzheng', 'peichang', 'zhixing']).optional()
                     .describe('案件类型筛选。可选值: xingshi(刑事), minshi(民事), xingzheng(行政), peichang(赔偿), zhixing(执行)'),
                 courtLevel: z.enum(['zuigao', 'gaoji', 'zhongji', 'jiceng']).optional()
                     .describe('法院级别筛选。可选值: zuigao(最高人民法院), gaoji(高级人民法院), zhongji(中级人民法院), jiceng(基层人民法院)'),
+                province: z.string().optional()
+                    .describe('法院省份筛选，如：北京市、河北省、黑龙江省'),
+                courtName: z.string().optional()
+                    .describe('审理法院名称筛选，如：北京市高级人民法院'),
+                judgmentYear: z.string().regex(/^\d{4}$/).optional()
+                    .describe('裁判年份筛选，格式: YYYY（如2024）。通过结果页左侧树筛选'),
                 startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
-                    .describe('开始日期，格式: YYYY-MM-DD'),
+                    .describe('裁判日期范围起始，格式: YYYY-MM-DD（如2024-01-01）。通过高级检索实现'),
                 endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
-                    .describe('结束日期，格式: YYYY-MM-DD'),
+                    .describe('裁判日期范围结束，格式: YYYY-MM-DD（如2024-12-31）。通过高级检索实现'),
                 page: z.number().int().min(1).optional().default(1)
                     .describe('页码，默认1'),
                 pageSize: z.number().int().min(1).max(100).optional().default(20)

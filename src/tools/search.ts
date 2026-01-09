@@ -37,6 +37,7 @@ export const SearchDocumentsInputSchema = z.object({
     courtLevel: z.string().optional(),
     province: z.string().optional(),
     courtName: z.string().optional(),
+    judgmentYear: z.string().regex(/^\d{4}$/, '年份格式应为YYYY，如2024').optional(),
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为YYYY-MM-DD').optional(),
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为YYYY-MM-DD').optional(),
     page: z.number().int().min(1).optional().default(1),
@@ -147,14 +148,13 @@ export class SearchTools {
             });
         }
 
-        // 验证日期范围
-        if (input.startDate && input.endDate) {
-            const start = new Date(input.startDate);
-            const end = new Date(input.endDate);
-            if (start > end) {
-                throw new InvalidParamsError('开始日期不能晚于结束日期', {
-                    startDate: input.startDate,
-                    endDate: input.endDate,
+        // 验证裁判年份
+        if (input.judgmentYear) {
+            const year = parseInt(input.judgmentYear, 10);
+            const currentYear = new Date().getFullYear();
+            if (year < 2000 || year > currentYear) {
+                throw new InvalidParamsError(`无效的裁判年份: ${input.judgmentYear}，应在2000-${currentYear}之间`, {
+                    validRange: `2000-${currentYear}`,
                 });
             }
         }
@@ -165,7 +165,8 @@ export class SearchTools {
      * 需求 2.4: 组合多个筛选条件时使用AND逻辑
      */
     private buildFilters(input: SearchDocumentsInput): SearchFilters | undefined {
-        const hasFilters = input.caseType || input.courtLevel || input.startDate || input.endDate || input.province || input.courtName;
+        const hasFilters = input.caseType || input.courtLevel || input.judgmentYear || 
+                          input.startDate || input.endDate || input.province || input.courtName;
 
         if (!hasFilters) {
             return undefined;
@@ -174,6 +175,7 @@ export class SearchTools {
         return {
             caseType: input.caseType as CaseType | undefined,
             courtLevel: input.courtLevel as CourtLevel | undefined,
+            judgmentYear: input.judgmentYear,
             startDate: input.startDate,
             endDate: input.endDate,
             province: input.province,
@@ -194,17 +196,24 @@ export class SearchTools {
  */
 export const searchDocumentsToolDefinition = {
     name: 'search_documents',
-    description: `搜索裁判文书。支持关键词搜索和多种筛选条件（案件类型、法院级别、日期范围、法院省份、审理法院）。
+    description: `搜索裁判文书。支持关键词搜索和多种筛选条件（案件类型、法院级别、裁判年份/日期范围、法院省份、审理法院）。
     
 使用前请确保已登录（调用 login_status 检查状态，未登录则调用 login_qrcode 获取二维码）。
 
-筛选条件使用AND逻辑组合，即返回的文书必须同时满足所有指定的筛选条件。`,
+筛选条件使用AND逻辑组合，即返回的文书必须同时满足所有指定的筛选条件。
+
+日期筛选说明：
+- judgmentYear: 按整年筛选（如2024），通过结果页左侧树实现
+- startDate/endDate: 按精确日期范围筛选（如2024-01-01至2024-06-30），通过高级检索实现
+- 如果同时指定了judgmentYear和startDate/endDate，优先使用日期范围
+
+注意：关键词应只包含案由或搜索词（如"劳动合同纠纷"），地区信息应通过province参数传递。`,
     inputSchema: {
         type: 'object' as const,
         properties: {
             keyword: {
                 type: 'string',
-                description: '搜索关键词，必填',
+                description: '搜索关键词（案由或关键词），必填。注意：不要在关键词中包含地区信息，地区应使用province参数',
             },
             caseType: {
                 type: 'string',
@@ -224,14 +233,19 @@ export const searchDocumentsToolDefinition = {
                 type: 'string',
                 description: '审理法院名称筛选，如：北京市高级人民法院',
             },
+            judgmentYear: {
+                type: 'string',
+                description: '裁判年份筛选，格式: YYYY（如2024）。通过结果页左侧树筛选',
+                pattern: '^\\d{4}$',
+            },
             startDate: {
                 type: 'string',
-                description: '开始日期，格式: YYYY-MM-DD',
+                description: '裁判日期范围起始，格式: YYYY-MM-DD（如2024-01-01）。通过高级检索实现',
                 pattern: '^\\d{4}-\\d{2}-\\d{2}$',
             },
             endDate: {
                 type: 'string',
-                description: '结束日期，格式: YYYY-MM-DD',
+                description: '裁判日期范围结束，格式: YYYY-MM-DD（如2024-12-31）。通过高级检索实现',
                 pattern: '^\\d{4}-\\d{2}-\\d{2}$',
             },
             page: {
