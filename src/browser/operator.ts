@@ -154,6 +154,34 @@ export class PageOperator {
     }
 
     /**
+     * 检查页面是否仍然有效可用
+     * 在执行任何操作前调用，防止 "Target page, context or browser has been closed" 错误
+     */
+    private async ensurePageValid(): Promise<void> {
+        try {
+            // 尝试获取页面URL来验证页面是否仍然有效
+            this.page.url();
+            
+            // 检查页面是否已关闭
+            if (this.page.isClosed()) {
+                throw new ServiceUnavailableError(
+                    '浏览器页面已关闭，请重新登录后再试。' +
+                    '提示：如果刚刚执行了登录操作，请稍等片刻后重试。'
+                );
+            }
+        } catch (error) {
+            if (error instanceof ServiceUnavailableError) {
+                throw error;
+            }
+            // 其他错误（如页面已被销毁）
+            throw new ServiceUnavailableError(
+                '浏览器页面已失效，请重新登录后再试。' +
+                `原因：${error instanceof Error ? error.message : String(error)}`
+            );
+        }
+    }
+
+    /**
      * 检查是否需要登录
      */
     async checkLoginRequired(): Promise<boolean> {
@@ -193,9 +221,28 @@ export class PageOperator {
 
         console.error(`[DEBUG] searchDocuments: 开始搜索 keyword="${keyword}", page=${page}, pageSize=${pageSize}`);
 
-        // 导航到搜索页面
+        // 在执行任何操作前，先检查页面是否有效
+        console.error('[DEBUG] searchDocuments: 检查页面有效性');
+        await this.ensurePageValid();
+
+        // 导航到搜索页面（包含页面关闭错误处理）
         console.error(`[DEBUG] searchDocuments: 导航到 ${this.config.searchUrl}`);
-        await this.page.goto(this.config.searchUrl, { waitUntil: 'domcontentloaded' });
+        try {
+            await this.page.goto(this.config.searchUrl, { waitUntil: 'domcontentloaded' });
+        } catch (error) {
+            // 捕获页面已关闭的错误，提供更友好的提示
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('Target page') ||
+                errorMessage.includes('closed') ||
+                errorMessage.includes('target closed') ||
+                errorMessage.includes('browser has been closed')) {
+                throw new ServiceUnavailableError(
+                    '浏览器页面已失效，请稍后重试搜索操作。' +
+                    '提示：如果刚刚执行了登录操作，请等待几秒后再尝试搜索。'
+                );
+            }
+            throw error;
+        }
         await this.waitForPageLoad();
         console.error('[DEBUG] searchDocuments: 页面加载完成');
 
@@ -1023,10 +1070,29 @@ export class PageOperator {
      * 需求 3.2: 返回结构化的元数据
      */
     async getDocumentDetail(docId: string): Promise<DocumentDetail> {
+        // 在执行任何操作前，先检查页面是否有效
+        await this.ensurePageValid();
+
         // 构建文书详情页URL
         const detailUrl = `${this.config.baseUrl}/website/wenshu/181107ANFZ0BXSK4/index.html?docId=${docId}`;
 
-        await this.page.goto(detailUrl, { waitUntil: 'domcontentloaded' });
+        // 导航到详情页（包含页面关闭错误处理）
+        try {
+            await this.page.goto(detailUrl, { waitUntil: 'domcontentloaded' });
+        } catch (error) {
+            // 捕获页面已关闭的错误，提供更友好的提示
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('Target page') ||
+                errorMessage.includes('closed') ||
+                errorMessage.includes('target closed') ||
+                errorMessage.includes('browser has been closed')) {
+                throw new ServiceUnavailableError(
+                    '浏览器页面已失效，请稍后重试获取文书详情操作。' +
+                    '提示：如果刚刚执行了登录操作，请等待几秒后再尝试。'
+                );
+            }
+            throw error;
+        }
         await this.waitForPageLoad();
 
         // 检查是否需要登录
