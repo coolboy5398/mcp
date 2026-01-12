@@ -449,6 +449,42 @@ export class AuthManager {
      * 需求 7.2: 当用户未登录时，文书服务器应返回支付宝认证的二维码URL
      */
     async getLoginQRCode(): Promise<QRCodeInfo> {
+        const maxRetries = 3;
+        let lastError: Error | null = null;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                logToFile(`[DEBUG] getLoginQRCode: 第 ${attempt}/${maxRetries} 次尝试获取二维码`);
+                return await this.tryGetLoginQRCode();
+            } catch (error) {
+                lastError = error instanceof Error ? error : new Error(String(error));
+                logToFile(`[DEBUG] getLoginQRCode: 第 ${attempt} 次尝试失败: ${lastError.message}`);
+                
+                if (attempt < maxRetries) {
+                    // 重试前刷新页面
+                    logToFile(`[DEBUG] getLoginQRCode: 等待2秒后重试...`);
+                    await this.page?.waitForTimeout(2000);
+                    
+                    // 尝试刷新页面
+                    try {
+                        await this.page?.reload({ waitUntil: 'domcontentloaded' });
+                    } catch {
+                        // 刷新失败则重新导航
+                        await this.page?.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
+                    }
+                }
+            }
+        }
+
+        // 所有重试都失败，抛出错误
+        throw new Error(`获取二维码失败（已重试${maxRetries}次）: ${lastError?.message || '未知错误'}`);
+    }
+
+    /**
+     * 尝试获取二维码的内部实现
+     * 如果无法找到二维码元素，抛出错误而非降级截图
+     */
+    private async tryGetLoginQRCode(): Promise<QRCodeInfo> {
         await this.initBrowser();
 
         if (!this.page) {
@@ -464,8 +500,9 @@ export class AuthManager {
         // 等待iframe加载
         try {
             await this.page.waitForSelector('iframe#contentIframe', { timeout: 10000, state: 'attached' });
+            logToFile('[DEBUG] tryGetLoginQRCode: iframe已加载');
         } catch (e) {
-            console.log('等待iframe超时，尝试继续');
+            logToFile(`[DEBUG] tryGetLoginQRCode: 等待iframe超时: ${e}`);
         }
 
         // 点击支付宝图标触发二维码显示
@@ -475,52 +512,63 @@ export class AuthManager {
         const frame = await this.getLoginFrame();
 
         // 显式等待支付宝二维码出现（最多等待10秒）
+        let qrCodeFound = false;
         try {
-            logToFile('[DEBUG] 等待支付宝二维码元素出现...');
+            logToFile('[DEBUG] tryGetLoginQRCode: 等待支付宝二维码元素出现...');
             // 优先等待精确的ID
             await frame.waitForSelector(QR_CODE_SELECTORS.alipayQRCode, { timeout: 5000, state: 'visible' });
-            logToFile('[DEBUG] 支付宝二维码元素已出现');
+            logToFile('[DEBUG] tryGetLoginQRCode: 支付宝二维码元素已出现 (alipayQRCode)');
+            qrCodeFound = true;
         } catch (e) {
-            logToFile(`[DEBUG] 等待精确二维码超时，尝试等待通用二维码: ${e}`);
+            logToFile(`[DEBUG] tryGetLoginQRCode: 等待精确二维码超时: ${e}`);
             // 降级：等待通用二维码
             try {
                 await frame.waitForSelector(QR_CODE_SELECTORS.qrCodeImage, { timeout: 5000, state: 'visible' });
+                logToFile('[DEBUG] tryGetLoginQRCode: 通用二维码元素已出现 (qrCodeImage)');
+                qrCodeFound = true;
             } catch (e2) {
-                logToFile(`[DEBUG] 等待通用二维码也超时了: ${e2}`);
+                logToFile(`[DEBUG] tryGetLoginQRCode: 等待通用二维码也超时了: ${e2}`);
             }
         }
 
         // 稍微等待渲染完成
         await this.page.waitForTimeout(1000);
 
-        // 截取二维码区域或整个页面
-        let qrCodeBase64: string;
-
-        try {
-            // 尝试找到二维码元素并截图
-            // 优先尝试精确选择器
-            let qrCodeElement = await frame.$(QR_CODE_SELECTORS.alipayQRCode);
-            
-            if (!qrCodeElement) {
-                // 尝试通用选择器
-                qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
-                    || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
-            }
-
-            if (qrCodeElement && await qrCodeElement.isVisible()) {
-                const screenshot = await qrCodeElement.screenshot({ type: 'png' });
-                qrCodeBase64 = screenshot.toString('base64');
-                logToFile('[DEBUG] 成功截取二维码元素');
-            } else {
-                // 如果找不到二维码元素，截取整个页面
-                const screenshot = await this.page.screenshot({ type: 'png' });
-                qrCodeBase64 = screenshot.toString('base64');
-            }
-        } catch {
-            // 截取整个页面作为备选
-            const screenshot = await this.page.screenshot({ type: 'png' });
-            qrCodeBase64 = screenshot.toString('base64');
+        // 尝试找到二维码元素并验证
+        // 优先尝试精确选择器
+        let qrCodeElement = await frame.$(QR_CODE_SELECTORS.alipayQRCode);
+        
+        if (!qrCodeElement) {
+            // 尝试通用选择器
+            qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
+                || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
         }
+
+        // 验证二维码元素是否可见
+        if (!qrCodeElement) {
+            logToFile('[DEBUG] tryGetLoginQRCode: 未找到任何二维码元素');
+            throw new Error('未找到二维码元素，请检查页面是否正常加载');
+        }
+
+        const isVisible = await qrCodeElement.isVisible().catch(() => false);
+        if (!isVisible) {
+            logToFile('[DEBUG] tryGetLoginQRCode: 二维码元素存在但不可见');
+            throw new Error('二维码元素不可见，可能页面未完全加载');
+        }
+
+        // 验证元素尺寸，确保不是空白或过小的元素
+        const boundingBox = await qrCodeElement.boundingBox();
+        if (!boundingBox || boundingBox.width < 50 || boundingBox.height < 50) {
+            logToFile(`[DEBUG] tryGetLoginQRCode: 二维码元素尺寸异常: ${JSON.stringify(boundingBox)}`);
+            throw new Error('二维码元素尺寸异常（太小或无尺寸），可能未正确加载');
+        }
+
+        logToFile(`[DEBUG] tryGetLoginQRCode: 二维码元素验证通过，尺寸: ${boundingBox.width}x${boundingBox.height}`);
+
+        // 截取二维码
+        const screenshot = await qrCodeElement.screenshot({ type: 'png' });
+        const qrCodeBase64 = screenshot.toString('base64');
+        logToFile('[DEBUG] tryGetLoginQRCode: 成功截取二维码元素');
 
         return {
             二维码图片Base64: qrCodeBase64,
