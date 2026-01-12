@@ -66,6 +66,8 @@ export class DocumentTools {
      * 需求 3.1: 根据文书ID获取完整内容
      * 需求 3.2: 返回结构化的元数据
      * 需求 3.3: 无效ID返回错误消息
+     *
+     * 并发支持：使用页面池实现多个请求并发执行
      */
     async getDocument(input: GetDocumentInput): Promise<GetDocumentOutput> {
         // 验证输入
@@ -79,13 +81,13 @@ export class DocumentTools {
             throw new AuthRequiredError('需要登录才能获取文书详情，请先调用 login_qrcode 获取二维码并扫码登录');
         }
 
-        // 获取浏览器页面
-        const page = await this.authManager.getPage();
-
-        // 创建页面操作器
-        const operator = new PageOperator(page);
+        // 从页面池获取页面（支持并发）
+        const page = await this.authManager.acquirePage();
 
         try {
+            // 创建页面操作器
+            const operator = new PageOperator(page);
+
             // 获取文书详情
             const detail: DocumentDetail = await operator.getDocumentDetail(input.docId);
 
@@ -108,6 +110,9 @@ export class DocumentTools {
                 throw new NotFoundError(`未找到文书: ${input.docId}，请检查文书ID是否正确`);
             }
             throw error;
+        } finally {
+            // 无论成功还是失败，都要归还页面到池中
+            this.authManager.releasePage(page);
         }
     }
 

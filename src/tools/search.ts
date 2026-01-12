@@ -5,7 +5,6 @@
  */
 
 import { z } from 'zod';
-import { Page } from 'playwright';
 import {
     CaseType,
     CourtLevel,
@@ -83,6 +82,8 @@ export class SearchTools {
      * 需求 2.1, 2.2, 2.3: 支持筛选条件
      * 需求 2.4: 组合筛选使用AND逻辑
      * 需求 5.1, 5.2, 5.3: 支持分页
+     *
+     * 并发支持：使用页面池实现多个搜索并发执行
      */
     async searchDocuments(input: SearchDocumentsInput): Promise<SearchDocumentsOutput> {
         // 验证筛选参数
@@ -94,40 +95,45 @@ export class SearchTools {
             throw new AuthRequiredError('需要登录才能搜索文书，请先调用 login_qrcode 获取二维码并扫码登录');
         }
 
-        // 获取浏览器页面
-        const page = await this.authManager.getPage();
+        // 从页面池获取页面（支持并发）
+        const page = await this.authManager.acquirePage();
 
-        // 创建页面操作器
-        const operator = new PageOperator(page);
+        try {
+            // 创建页面操作器
+            const operator = new PageOperator(page);
 
-        // 构建搜索参数
-        const searchParams: SearchParams = {
-            keyword: input.keyword,
-            page: input.page,
-            pageSize: input.pageSize,
-            filters: this.buildFilters(input),
-        };
-
-        // 执行搜索
-        const result: SearchResponse = await operator.searchDocuments(searchParams);
-
-        // 需求 1.3: 没有结果时返回空列表并附带描述性消息
-        if (result.documents.length === 0) {
-            return {
-                total: 0,
-                page: input.page ?? 1,
-                pageSize: input.pageSize ?? 20,
-                documents: [],
-                消息: `未找到与"${input.keyword}"相关的裁判文书`,
+            // 构建搜索参数
+            const searchParams: SearchParams = {
+                keyword: input.keyword,
+                page: input.page,
+                pageSize: input.pageSize,
+                filters: this.buildFilters(input),
             };
-        }
 
-        return {
-            total: result.total,
-            page: result.page,
-            pageSize: result.pageSize,
-            documents: result.documents,
-        };
+            // 执行搜索
+            const result: SearchResponse = await operator.searchDocuments(searchParams);
+
+            // 需求 1.3: 没有结果时返回空列表并附带描述性消息
+            if (result.documents.length === 0) {
+                return {
+                    total: 0,
+                    page: input.page ?? 1,
+                    pageSize: input.pageSize ?? 20,
+                    documents: [],
+                    消息: `未找到与"${input.keyword}"相关的裁判文书`,
+                };
+            }
+
+            return {
+                total: result.total,
+                page: result.page,
+                pageSize: result.pageSize,
+                documents: result.documents,
+            };
+        } finally {
+            // 无论成功还是失败，都要归还页面到池中
+            this.authManager.releasePage(page);
+        }
     }
 
     /**

@@ -108,6 +108,8 @@ export interface AuthManagerConfig {
     browserTimeout?: number;
     /** 页面加载超时（毫秒） */
     pageTimeout?: number;
+    /** 最大并发页面数（页面池大小），默认5 */
+    maxConcurrentPages?: number;
 }
 
 /**
@@ -119,6 +121,7 @@ const DEFAULT_CONFIG: Required<Omit<AuthManagerConfig, 'sessionConfig'>> = {
     loginUrl: 'https://wenshu.court.gov.cn/website/wenshu/181010CARHS5BS3C/index.html',
     browserTimeout: 30000,
     pageTimeout: 30000,
+    maxConcurrentPages: 10,
 };
 
 /**
@@ -142,6 +145,15 @@ const QR_CODE_SELECTORS = {
 };
 
 /**
+ * 页面池中的页面状态
+ */
+interface PooledPage {
+    page: Page;
+    inUse: boolean;
+    lastUsed: number;
+}
+
+/**
  * 认证管理器类
  * 负责管理浏览器实例和用户认证状态
  */
@@ -151,6 +163,11 @@ export class AuthManager {
     private browser: Browser | null = null;
     private context: BrowserContext | null = null;
     private page: Page | null = null;
+    
+    /** 页面池：支持并发搜索 */
+    private pagePool: PooledPage[] = [];
+    /** 页面池等待队列 */
+    private pageWaitQueue: Array<(page: Page) => void> = [];
 
     constructor(config?: AuthManagerConfig) {
         this.sessionStore = new SessionStore(config?.sessionConfig);
@@ -160,6 +177,7 @@ export class AuthManager {
             loginUrl: config?.loginUrl ?? DEFAULT_CONFIG.loginUrl,
             browserTimeout: config?.browserTimeout ?? DEFAULT_CONFIG.browserTimeout,
             pageTimeout: config?.pageTimeout ?? DEFAULT_CONFIG.pageTimeout,
+            maxConcurrentPages: config?.maxConcurrentPages ?? DEFAULT_CONFIG.maxConcurrentPages,
         };
         
         // 初始化日志文件路径
@@ -793,9 +811,116 @@ export class AuthManager {
     }
 
     /**
+     * 从页面池获取一个可用页面（用于并发搜索）
+     * 如果池中没有可用页面且未达到最大数量，会创建新页面
+     * 如果已达到最大数量，会等待其他页面释放
+     * @returns 可用的Page实例
+     */
+    async acquirePage(): Promise<Page> {
+        await this.initBrowser();
+
+        if (!this.context) {
+            throw new Error('浏览器上下文初始化失败');
+        }
+
+        // 1. 先尝试从池中获取空闲页面
+        for (const pooledPage of this.pagePool) {
+            if (!pooledPage.inUse) {
+                // 检查页面是否仍然有效
+                try {
+                    pooledPage.page.url();
+                    if (!pooledPage.page.isClosed()) {
+                        pooledPage.inUse = true;
+                        pooledPage.lastUsed = Date.now();
+                        logToFile(`[DEBUG] acquirePage: 从池中获取空闲页面，当前池大小=${this.pagePool.length}`);
+                        return pooledPage.page;
+                    }
+                } catch {
+                    // 页面已失效，从池中移除
+                    const index = this.pagePool.indexOf(pooledPage);
+                    if (index > -1) {
+                        this.pagePool.splice(index, 1);
+                    }
+                }
+            }
+        }
+
+        // 2. 如果池未满，创建新页面
+        if (this.pagePool.length < this.config.maxConcurrentPages) {
+            const newPage = await this.context.newPage();
+            newPage.setDefaultTimeout(this.config.pageTimeout);
+            
+            const pooledPage: PooledPage = {
+                page: newPage,
+                inUse: true,
+                lastUsed: Date.now(),
+            };
+            this.pagePool.push(pooledPage);
+            logToFile(`[DEBUG] acquirePage: 创建新页面，当前池大小=${this.pagePool.length}/${this.config.maxConcurrentPages}`);
+            return newPage;
+        }
+
+        // 3. 池已满，等待其他页面释放
+        logToFile(`[DEBUG] acquirePage: 池已满(${this.pagePool.length}/${this.config.maxConcurrentPages})，等待页面释放...`);
+        return new Promise<Page>((resolve) => {
+            this.pageWaitQueue.push(resolve);
+        });
+    }
+
+    /**
+     * 将页面归还到池中
+     * @param page 要归还的页面
+     */
+    releasePage(page: Page): void {
+        const pooledPage = this.pagePool.find(p => p.page === page);
+        if (pooledPage) {
+            pooledPage.inUse = false;
+            pooledPage.lastUsed = Date.now();
+            logToFile(`[DEBUG] releasePage: 页面已归还，当前使用中=${this.pagePool.filter(p => p.inUse).length}/${this.pagePool.length}`);
+
+            // 如果有等待的请求，分配给它
+            if (this.pageWaitQueue.length > 0) {
+                const resolve = this.pageWaitQueue.shift();
+                if (resolve) {
+                    pooledPage.inUse = true;
+                    pooledPage.lastUsed = Date.now();
+                    logToFile(`[DEBUG] releasePage: 将页面分配给等待队列中的请求`);
+                    resolve(page);
+                }
+            }
+        } else {
+            logToFile(`[DEBUG] releasePage: 页面不在池中，忽略`);
+        }
+    }
+
+    /**
+     * 获取页面池统计信息
+     */
+    getPoolStats(): { total: number; inUse: number; available: number; maxSize: number } {
+        const inUse = this.pagePool.filter(p => p.inUse).length;
+        return {
+            total: this.pagePool.length,
+            inUse,
+            available: this.pagePool.length - inUse,
+            maxSize: this.config.maxConcurrentPages,
+        };
+    }
+
+    /**
      * 关闭浏览器
      */
     async closeBrowser(): Promise<void> {
+        // 先关闭页面池中的所有页面
+        for (const pooledPage of this.pagePool) {
+            try {
+                await pooledPage.page.close();
+            } catch {
+                // 忽略关闭错误
+            }
+        }
+        this.pagePool = [];
+        this.pageWaitQueue = [];
+
         if (this.page) {
             await this.page.close().catch(() => { });
             this.page = null;
