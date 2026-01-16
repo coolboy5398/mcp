@@ -119,16 +119,17 @@ const SELECTORS = {
     filterCourtLevel: '.court-level-filter, [data-filter="courtLevel"]',
     filterDateRange: '.date-range-filter, [data-filter="dateRange"]',
 
-    // 文书详情
-    documentContent: '.content, .ws-content, .document-content, #content',
-    documentTitle: '.title, h1, .ws-title',
-    documentCaseNo: '.case-no, .ah, .caseNo',
-    documentCourt: '.court, .fy, .courtName, .slfyName',
-    documentDate: '.date, .cprq, .judgeDate',
-    documentParties: '.parties, .dsr, .party-info',
+    // 文书详情 - 基于裁判文书网实际页面结构更新
+    // 文书内容可能在 PDF_box 容器中，或者使用 #contentText
+    documentContent: '.PDF_box, #contentText, .content, .ws-content, .document-content, #content',
+    documentTitle: '.PDF_title, .title, h1, .ws-title',
+    documentCaseNo: 'span.ah, .case-no, .ah, .caseNo',
+    documentCourt: 'span.fy, .slfyName, .court, .fy, .courtName',
+    documentDate: 'span.cprq, .date, .cprq, .judgeDate',
+    documentParties: '.parties, .dsr, .party-info, .litigant',
     documentJudges: '.judges, .spry, .judge-info',
-    documentCause: '.cause, .ay, .case-cause',
-    documentFullText: '.full-text, .ws-text, .document-body',
+    documentCause: 'span.ay, .cause, .ay, .case-cause',
+    documentFullText: '.PDF_content, #contentText, .full-text, .ws-text, .document-body',
 
     // 登录检测
     loginRequired: '.login-tip, .need-login, [class*="login"]',
@@ -161,7 +162,7 @@ export class PageOperator {
         try {
             // 尝试获取页面URL来验证页面是否仍然有效
             this.page.url();
-            
+
             // 检查页面是否已关闭
             if (this.page.isClosed()) {
                 throw new ServiceUnavailableError(
@@ -264,7 +265,7 @@ export class PageOperator {
         if (filters?.courtName) {
             console.error('[DEBUG] searchDocuments: 打开高级检索面板');
             await this.openAdvancedSearch();
-            
+
             console.error(`[DEBUG] searchDocuments: 输入法院名称 "${filters.courtName}"`);
             await this.inputCourtName(filters.courtName);
         }
@@ -337,7 +338,7 @@ export class PageOperator {
     private async inputSearchKeyword(keyword: string): Promise<void> {
         // 策略1: 优先使用 getByPlaceholder 精确定位
         const searchInput = this.page.getByPlaceholder(SELECTORS.searchInputPlaceholder);
-        
+
         try {
             await searchInput.waitFor({
                 state: 'visible',
@@ -416,7 +417,7 @@ export class PageOperator {
                 await searchBtn.click();
                 return;
             }
-        } catch {}
+        } catch { }
 
         // Strategy 2: Use getByRole near search input定位搜索区域附近的可点击元素
         try {
@@ -512,16 +513,16 @@ export class PageOperator {
                 console.error('[DEBUG] applyCaseTypeFilter: 未找到案件类型下拉框 #s8');
                 return;
             }
-            
+
             // 获取映射值
             const targetVal = CASE_TYPE_MAP[caseType] || caseType;
-            
+
             // 2. 选择选项 (在案件类型专用的下拉列表 #gjjs_ajlx 中查找)
             const selector = `#gjjs_ajlx li[data-val="${targetVal}"]`;
             try {
                 await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
                 const option = await this.page.$(selector);
-                
+
                 if (option) {
                     console.error(`[DEBUG] applyCaseTypeFilter: 点击选项 val=${targetVal}`);
                     await option.click();
@@ -565,17 +566,17 @@ export class PageOperator {
                 console.error('[DEBUG] applyCourtLevelFilter: 未找到法院层级下拉框 #s4');
                 return;
             }
-            
+
             // 获取映射值
             const targetVal = COURT_LEVEL_MAP[courtLevel] || courtLevel;
-            
+
             // 2. 选择选项 (在法院层级专用的下拉列表 #gjjs_fycj 中查找)
             const selector = `#gjjs_fycj li[data-val="${targetVal}"]`;
             // 等待选项可见
             try {
                 await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
                 const option = await this.page.$(selector);
-                
+
                 if (option) {
                     console.error(`[DEBUG] applyCourtLevelFilter: 点击选项 val=${targetVal}`);
                     await option.click();
@@ -585,7 +586,7 @@ export class PageOperator {
                     console.error(`[DEBUG] applyCourtLevelFilter: 未找到法院层级选项 "${courtLevel}" (val=${targetVal})`);
                 }
             } catch (err) {
-                 console.error(`[DEBUG] applyCourtLevelFilter: 等待选项超时或失败 - ${err}`);
+                console.error(`[DEBUG] applyCourtLevelFilter: 等待选项超时或失败 - ${err}`);
             }
         } catch (e) {
             console.error(`[DEBUG] applyCourtLevelFilter: 筛选出错 - ${e}`);
@@ -607,14 +608,14 @@ export class PageOperator {
 
             // 使用修正后的选择器
             const advancedBtn = this.page.locator('.advenced-search').first();
-            
+
             if (await advancedBtn.count() > 0 && await advancedBtn.isVisible()) {
                 console.error('[DEBUG] openAdvancedSearch: 点击高级检索按钮');
                 await advancedBtn.click();
                 // 等待面板展开动画
                 await this.page.waitForTimeout(1000);
             } else {
-                 console.error('[DEBUG] openAdvancedSearch: 未找到高级检索按钮 (.advenced-search)');
+                console.error('[DEBUG] openAdvancedSearch: 未找到高级检索按钮 (.advenced-search)');
             }
         } catch (e) {
             console.error(`[DEBUG] openAdvancedSearch: 打开面板失败 - ${e}`);
@@ -630,7 +631,7 @@ export class PageOperator {
             // 等待输入框出现
             await this.page.waitForSelector(selector, { state: 'visible', timeout: 3000 });
             await this.page.fill(selector, courtName);
-            
+
             // 有时候可能会有联想下拉框遮挡，按一下Tab或者点击空白处
             await this.page.keyboard.press('Tab');
         } catch {
@@ -657,7 +658,7 @@ export class PageOperator {
             // 选择器可能需要调整以匹配实际页面结构
             // 优先尝试精确匹配 jstree-anchor
             const provinceNode = this.page.locator(`.jstree-anchor`).filter({ hasText: new RegExp(`^${province}$`) }).first();
-            
+
             // 检查是否存在
             if (await provinceNode.count() > 0) {
                 await provinceNode.scrollIntoViewIfNeeded();
@@ -676,7 +677,7 @@ export class PageOperator {
                 await this.waitForFilterTag(`法院省份：${province}`);
                 return;
             }
-            
+
             console.error(`[DEBUG] applyProvinceFilter: 未找到省份节点 "${province}"`);
         } catch (e) {
             console.error(`[DEBUG] applyProvinceFilter: 筛选出错 - ${e}`);
@@ -693,7 +694,7 @@ export class PageOperator {
             // 年份在左侧树形结构中，格式类似 "2024(278)"
             // 使用 jstree-anchor 选择器，匹配以年份开头的文本
             const yearNode = this.page.locator(`.jstree-anchor`).filter({ hasText: new RegExp(`^${year}\\(`) }).first();
-            
+
             // 检查是否存在
             if (await yearNode.count() > 0) {
                 console.error(`[DEBUG] applyJudgmentYearFilter: 找到年份节点，点击中...`);
@@ -714,7 +715,7 @@ export class PageOperator {
                 await this.waitForFilterTag(`裁判年份：${year}`);
                 return;
             }
-            
+
             console.error(`[DEBUG] applyJudgmentYearFilter: 未找到年份节点 "${year}"`);
         } catch (e) {
             console.error(`[DEBUG] applyJudgmentYearFilter: 筛选出错 - ${e}`);
@@ -730,9 +731,9 @@ export class PageOperator {
         if (!startDate && !endDate) {
             return;
         }
-        
+
         console.error(`[DEBUG] applyDateRangeFilter: 应用日期范围 ${startDate || ''} ~ ${endDate || ''}`);
-        
+
         try {
             // 1. 展开高级检索面板
             const wrapper = this.page.locator('.advencedWrapper');
@@ -742,7 +743,7 @@ export class PageOperator {
                 });
             }
             await this.page.waitForTimeout(500);
-            
+
             // 2. 填入开始日期
             if (startDate) {
                 const startInput = this.page.locator('#cprqStart');
@@ -751,7 +752,7 @@ export class PageOperator {
                     console.error(`[DEBUG] applyDateRangeFilter: 已设置开始日期 ${startDate}`);
                 }
             }
-            
+
             // 3. 填入结束日期
             if (endDate) {
                 const endInput = this.page.locator('#cprqEnd');
@@ -780,7 +781,7 @@ export class PageOperator {
                 state: 'visible',
             });
             console.error(`[DEBUG] waitForFilterTag: 筛选标签 "${tagText}" 已出现`);
-            
+
             // 额外等待一小段时间确保结果列表也刷新完成
             await this.page.waitForTimeout(500);
         } catch (e) {
@@ -797,15 +798,15 @@ export class PageOperator {
         // 等待页面导航完成
         await this.page.waitForLoadState('domcontentloaded', { timeout: this.config.loadTimeout });
         console.error('[DEBUG] waitForSearchResults: domcontentloaded 完成');
-        
+
         // 等待网络空闲（搜索结果通常需要异步加载）
         await this.page.waitForLoadState('networkidle', { timeout: this.config.loadTimeout }).catch(() => { });
         console.error('[DEBUG] waitForSearchResults: networkidle 完成');
-        
+
         // 检测是否被重定向到登录页
         const currentUrl = this.page.url();
         console.error(`[DEBUG] waitForSearchResults: 当前URL = ${currentUrl}`);
-        
+
         if (currentUrl.includes('181010CARHS5BS3C')) {
             // 181010CARHS5BS3C 是登录页面的特征路径
             throw new AuthRequiredError('搜索需要登录，请先调用 login_qrcode 获取二维码并扫码登录');
@@ -892,7 +893,7 @@ export class PageOperator {
                     return dataValue;
                 }
             }
-            
+
             // 方法2: 从标题链接获取文书ID (链接格式: ../181107ANFZ0BXSK4/index.html?docId=xxx)
             const link = await item.$(SELECTORS.resultTitle);
             if (link) {
@@ -965,7 +966,7 @@ export class PageOperator {
             if (match && match[1]) {
                 return parseInt(match[1], 10);
             }
-            
+
             // 备选：使用 locator 查找
             const totalLocator = this.page.locator(':text("共检索到")');
             const count = await totalLocator.count();
@@ -1065,16 +1066,49 @@ export class PageOperator {
     }
 
     /**
+     * 验证 docId 格式
+     * 裁判文书网的 docId 通常是 Base64 编码的长字符串
+     */
+    private validateDocId(docId: string): void {
+        if (!docId || docId.trim() === '') {
+            throw new NotFoundError('docId 不能为空，请提供有效的文书ID');
+        }
+
+        // 检查是否是临时ID（由 parseResultItem 在无法获取真实ID时生成）
+        if (docId.startsWith('temp_')) {
+            throw new NotFoundError(
+                '无效的临时 docId，请使用 search_documents 获取有效的文书ID。\n' +
+                '提示：临时ID表示搜索结果解析时未能获取到真实的文书ID'
+            );
+        }
+
+        // 检查长度（有效的 docId 通常是 Base64 编码，长度约 80-120 字符）
+        if (docId.length < 50) {
+            console.error(`[WARN] validateDocId: docId 长度异常短 (${docId.length} 字符)，可能无效`);
+            console.error(`[WARN] validateDocId: 有效的 docId 通常是 Base64 编码的长字符串（80-120字符）`);
+            // 不抛出错误，只是警告，因为可能存在特殊格式
+        }
+    }
+
+    /**
      * 获取文书详情
      * 需求 3.1: 根据文书ID获取完整内容
      * 需求 3.2: 返回结构化的元数据
      */
     async getDocumentDetail(docId: string): Promise<DocumentDetail> {
+        // 调试日志：打印传入的 docId
+        console.error(`[DEBUG] getDocumentDetail: 开始获取文书详情`);
+        console.error(`[DEBUG] getDocumentDetail: docId = ${docId.substring(0, 50)}...（长度: ${docId.length}）`);
+
+        // 前置验证：检查 docId 格式
+        this.validateDocId(docId);
+
         // 在执行任何操作前，先检查页面是否有效
         await this.ensurePageValid();
 
-        // 构建文书详情页URL
-        const detailUrl = `${this.config.baseUrl}/website/wenshu/181107ANFZ0BXSK4/index.html?docId=${docId}`;
+        // 构建文书详情页URL（docId需要URL编码，因为可能包含/、+等特殊字符）
+        const detailUrl = `${this.config.baseUrl}/website/wenshu/181107ANFZ0BXSK4/index.html?docId=${encodeURIComponent(docId)}`;
+        console.error(`[DEBUG] getDocumentDetail: 访问URL = ${detailUrl}`);
 
         // 导航到详情页（包含页面关闭错误处理）
         try {
@@ -1095,18 +1129,45 @@ export class PageOperator {
         }
         await this.waitForPageLoad();
 
-        // 检查是否需要登录
-        if (await this.checkLoginRequired()) {
+        // 调试日志：打印页面加载后的状态
+        const currentUrl = this.page.url();
+        const pageTitle = await this.page.title();
+        console.error(`[DEBUG] getDocumentDetail: 页面加载完成`);
+        console.error(`[DEBUG] getDocumentDetail: 当前URL = ${currentUrl}`);
+        console.error(`[DEBUG] getDocumentDetail: 页面标题 = ${pageTitle}`);
+
+        // 检测是否被重定向到登录页（181010CARHS5BS3C 是登录页的特征路径）
+        if (currentUrl.includes('181010CARHS5BS3C')) {
+            console.error(`[DEBUG] getDocumentDetail: 检测到登录页重定向`);
+            throw new AuthRequiredError(
+                '获取文书详情需要登录，请先调用 login_qrcode 获取二维码并扫码登录'
+            );
+        }
+
+        // 检查是否需要登录（备用检测）
+        const loginRequired = await this.checkLoginRequired();
+        console.error(`[DEBUG] getDocumentDetail: 登录检测结果 = ${loginRequired}`);
+        if (loginRequired) {
             throw new AuthRequiredError('需要登录才能查看文书详情');
         }
 
         // 等待文书内容加载
+        console.error(`[DEBUG] getDocumentDetail: 等待文书内容选择器 = ${SELECTORS.documentContent}`);
         try {
             await this.page.waitForSelector(SELECTORS.documentContent, {
                 timeout: this.config.elementTimeout,
             });
+            console.error(`[DEBUG] getDocumentDetail: 文书内容选择器找到`);
         } catch {
-            throw new NotFoundError(`未找到文书: ${docId}`);
+            // 调试日志：打印页面内容帮助诊断
+            console.error(`[DEBUG] getDocumentDetail: 文书内容选择器未找到，打印页面诊断信息`);
+            try {
+                const bodyText = await this.page.$eval('body', el => el.innerText.substring(0, 500));
+                console.error(`[DEBUG] getDocumentDetail: 页面body内容（前500字符）= ${bodyText}`);
+            } catch (e) {
+                console.error(`[DEBUG] getDocumentDetail: 无法获取页面body内容: ${e}`);
+            }
+            throw new NotFoundError(`未找到文书: ${docId}，请检查文书ID是否正确`);
         }
 
         // 解析文书详情
@@ -1132,6 +1193,35 @@ export class PageOperator {
         const 裁判日期 = await getText(SELECTORS.documentDate);
         const 案由 = await getText(SELECTORS.documentCause);
         const 文书全文 = await getText(SELECTORS.documentFullText);
+
+        // 空内容检测：当关键字段都为空时，说明 docId 无效或文书不存在
+        if (!案件名称 && !案号 && !文书全文) {
+            console.error(`[ERROR] parseDocumentDetail: 文书内容为空`);
+            console.error(`[ERROR] parseDocumentDetail: docId = ${docId.substring(0, 50)}...`);
+            
+            // 尝试获取页面上的错误提示信息
+            let pageHint = '';
+            try {
+                const bodyText = await this.page.$eval('body', el => el.innerText.substring(0, 200));
+                if (bodyText) {
+                    pageHint = `\n页面内容: ${bodyText.replace(/\s+/g, ' ').trim()}`;
+                }
+            } catch {
+                // 忽略获取页面内容失败
+            }
+
+            throw new NotFoundError(
+                `文书内容为空，无法获取文书详情。\n` +
+                `docId: ${docId.substring(0, 40)}...\n\n` +
+                `可能原因：\n` +
+                `1. docId 无效或格式错误\n` +
+                `2. 该文书已被删除或下架\n` +
+                `3. docId 已过期（裁判文书网的 docId 可能会定期更新）\n` +
+                `4. 需要更高权限才能访问该文书\n\n` +
+                `建议：使用 search_documents 重新搜索获取最新的 docId` +
+                pageHint
+            );
+        }
 
         // 解析当事人信息
         const 当事人 = await this.parseParties();
