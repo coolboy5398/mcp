@@ -29,7 +29,7 @@ import {
 export const GetDocumentInputSchema = z.object({
     docId: z.string()
         .min(1, '文书ID不能为空')
-        .describe('文书ID或案号，必填。可以从搜索结果中获取文书ID。'),
+        .describe('文书ID，必填。必须传入 search_documents 返回的真实文书ID，不能直接传案号。'),
 });
 
 export type GetDocumentInput = z.infer<typeof GetDocumentInputSchema>;
@@ -109,7 +109,10 @@ export class DocumentTools {
         } catch (error) {
             // 需求 3.3: 无效ID返回适当的错误消息
             if (error instanceof NotFoundError) {
-                throw new NotFoundError(`未找到文书: ${input.docId}，请检查文书ID是否正确`);
+                throw new NotFoundError(
+                    `未找到文书: ${input.docId}。get_document 仅支持真实文书ID，不支持直接传案号。`
+                    + '请先调用 search_documents 搜索目标文书，并使用返回结果中的文书ID再次调用 get_document',
+                );
             }
             throw error;
         } finally {
@@ -134,6 +137,9 @@ export const getDocumentToolDefinition = {
     description: `获取裁判文书的完整内容和详细信息。
 
 使用前请确保已登录（调用 login_status 检查状态，未登录则调用 login_qrcode 获取二维码）。
+
+注意：本工具仅支持传入 search_documents 返回的真实文书ID，不能直接传案号。
+如果你只有案号，请先调用 search_documents 搜索目标文书，再使用搜索结果中的文书ID调用本工具。
 
 返回的信息包括：
 - 基本信息：文书ID、案件名称、案号、法院名称、法院级别、裁判日期、案件类型
