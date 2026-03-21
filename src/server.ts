@@ -251,14 +251,17 @@ function printHelp(): void {
 配置优先级: 命令行参数 > 环境变量 > 默认值
 
 示例:
-  # 使用默认配置启动
+  # 已安装为命令行工具时，使用默认配置启动
   court-document-mcp
 
+  # 本地构建产物启动（推荐用于 MCP 客户端配置）
+  node dist/server.js
+
   # 指定Session存储路径
-  court-document-mcp --session-path /path/to/session
+  node dist/server.js --session-path /path/to/session
 
   # 使用有头模式（弹出浏览器窗口）
-  court-document-mcp --no-headless
+  node dist/server.js --no-headless
 
 MCP配置示例 (mcp.json):
   {
