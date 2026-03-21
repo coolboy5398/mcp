@@ -12,6 +12,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import packageJson from '../package.json' with { type: 'json' };
 import {
     AuthManager,
     createAuthManager,
@@ -43,7 +44,7 @@ interface ServerConfig {
  */
 const DEFAULT_CONFIG: ServerConfig = {
     name: 'court-document-server',
-    version: '1.0.1',
+    version: packageJson.version,
     sessionPath: './session-data',
     headless: true,
 };

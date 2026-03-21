@@ -2,7 +2,7 @@
  * 页面解析辅助函数
  */
 
-import { Page } from 'playwright';
+import { ElementHandle, Page } from 'playwright';
 import {
     DocumentDetail,
     DocumentSummary,
@@ -89,7 +89,7 @@ export async function parseDocumentDetail(page: Page, docId: string): Promise<Do
     const 法院名称 = await extractText(page, PAGE_SELECTORS.documentCourt);
     const 裁判日期 = await extractText(page, PAGE_SELECTORS.documentDate);
     const 案由 = await extractText(page, PAGE_SELECTORS.documentCause);
-    const 文书全文 = await extractText(page, PAGE_SELECTORS.documentFullText);
+    const 文书全文 = await extractDocumentFullText(page);
 
     if (!案件名称 && !案号 && !文书全文) {
         console.error('[ERROR] parseDocumentDetail: 文书内容为空');
@@ -145,6 +145,97 @@ async function extractText(page: Page, selector: string): Promise<string> {
     } catch {
         return '';
     }
+}
+
+async function extractDocumentFullText(page: Page): Promise<string> {
+    const selectorCandidates = Array.from(new Set([
+        PAGE_SELECTORS.documentFullText,
+        PAGE_SELECTORS.documentContent,
+    ]));
+
+    for (const selector of selectorCandidates) {
+        const text = await extractBestTextFromSelector(page, selector);
+        if (text) {
+            console.error(`[DEBUG] parseDocumentDetail: 文书全文提取成功，selector = ${selector}，长度 = ${text.length}`);
+            return text;
+        }
+    }
+
+    const bodyText = await extractBodyFallbackText(page);
+    if (bodyText) {
+        console.error(`[DEBUG] parseDocumentDetail: 使用 body 兜底提取正文，长度 = ${bodyText.length}`);
+        return bodyText;
+    }
+
+    return '';
+}
+
+async function extractBestTextFromSelector(page: Page, selector: string): Promise<string> {
+    try {
+        const elements = await page.$$(selector);
+        if (elements.length === 0) {
+            return '';
+        }
+
+        let bestText = '';
+        for (const element of elements) {
+            const text = await extractTextFromElement(element);
+            if (text.length > bestText.length) {
+                bestText = text;
+            }
+        }
+
+        return bestText;
+    } catch {
+        return '';
+    }
+}
+
+async function extractTextFromElement(element: ElementHandle): Promise<string> {
+    try {
+        const innerText = await element.evaluate((node) => {
+            const text = 'innerText' in node ? node.innerText : '';
+            return typeof text === 'string' ? text : '';
+        });
+        const normalizedInnerText = normalizeExtractedText(innerText);
+        if (normalizedInnerText) {
+            return normalizedInnerText;
+        }
+
+        const textContent = await element.textContent();
+        return normalizeExtractedText(textContent);
+    } catch {
+        return '';
+    }
+}
+
+async function extractBodyFallbackText(page: Page): Promise<string> {
+    try {
+        const bodyText = await page.$eval('body', (body) => {
+            const text = body.innerText || '';
+            return typeof text === 'string' ? text : '';
+        });
+        return normalizeExtractedText(bodyText);
+    } catch {
+        return '';
+    }
+}
+
+function normalizeExtractedText(text: string | null | undefined): string {
+    if (!text) {
+        return '';
+    }
+
+    return text
+        .replace(/\r/g, '')
+        .replace(/[\t\f\v]+/g, ' ')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ ]{2,}/g, ' ')
+        .split('\n')
+        .map(line => line.trim())
+        .join('\n')
+        .trim();
 }
 
 async function parseParties(page: Page): Promise<PartyInfo[]> {
