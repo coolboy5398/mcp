@@ -12,7 +12,6 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
 import {
     AuthManager,
     createAuthManager,
@@ -20,21 +19,10 @@ import {
     AuthManagerConfig,
 } from './auth/index.js';
 import {
-    AuthTools,
-    WaitLoginInputSchema,
-    BrowserLoginInputSchema,
-} from './tools/auth.js';
-import {
-    MetadataTools,
-} from './tools/metadata.js';
-import {
-    SearchTools,
-    SearchDocumentsInputSchema,
-} from './tools/search.js';
-import {
-    DocumentTools,
-    GetDocumentInputSchema,
-} from './tools/document.js';
+    allToolDefinitions,
+    createAllToolHandlers,
+    ToolName,
+} from './tools/index.js';
 
 /**
  * 服务器配置接口
@@ -61,238 +49,81 @@ const DEFAULT_CONFIG: ServerConfig = {
 };
 
 /**
- * 注册所有工具到MCP服务器
+ * MCP 响应内容项
+ */
+type ToolResponseContent = Array<{
+    type: 'text' | 'image';
+    text?: string;
+    data?: string;
+    mimeType?: string;
+}>;
+
+/**
+ * MCP 工具处理结果
+ */
+interface ToolResponse {
+    content: ToolResponseContent;
+    isError?: boolean;
+}
+
+/**
+ * MCP 工具定义
+ */
+interface ToolDefinition {
+    name: ToolName;
+    description: string;
+    inputSchema?: Record<string, unknown>;
+}
+
+/**
+ * 统一注册所有工具到MCP服务器
  */
 function registerTools(server: McpServer, authManager: AuthManager): void {
-    // 创建工具实例
-    const authTools = new AuthTools(authManager);
-    const metadataTools = new MetadataTools();
-    const searchTools = new SearchTools(authManager);
-    const documentTools = new DocumentTools(authManager);
+    const toolHandlers = createAllToolHandlers(authManager);
+    const unsafeServer = server as unknown as {
+        registerTool: (
+            name: string,
+            metadata: { description: string; inputSchema?: unknown },
+            handler: (args: unknown) => Promise<ToolResponse>
+        ) => void;
+    };
 
-    // ========== 认证工具 ==========
+    for (const definition of allToolDefinitions as ToolDefinition[]) {
+        const handler = toolHandlers[definition.name];
 
-    // login_status - 检查登录状态
-    server.registerTool(
-        'login_status',
-        {
-            description: '检查当前登录状态。返回是否已登录以及Session剩余有效时间。',
-        },
-        async () => {
-            const result = await authTools.loginStatus();
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
+        if (!handler) {
+            throw new Error(`未找到工具处理器: ${definition.name}`);
         }
-    );
 
-    // login_qrcode - 获取登录二维码
-    server.registerTool(
-        'login_qrcode',
-        {
-            description: '获取支付宝扫码登录的二维码图片（首选登录方式）。返回Base64编码的二维码图片，用户需要使用支付宝扫码登录。',
-        },
-        async () => {
-            const result = await authTools.loginQRCode();
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: JSON.stringify({
-                            说明: result.说明,
-                            过期秒数: result.过期秒数,
-                        }, null, 2),
-                    },
-                    {
-                        type: 'image' as const,
-                        data: result.二维码图片,
-                        mimeType: 'image/png',
-                    },
-                ],
-            };
-        }
-    );
-
-    // wait_login - 等待登录完成
-    server.registerTool(
-        'wait_login',
-        {
-            description: '等待用户扫码登录完成。在获取二维码后调用此工具等待用户完成扫码认证。',
-            inputSchema: {
-                timeoutSeconds: z.number().min(10).max(300).optional().default(120)
-                    .describe('等待超时时间（秒），默认120秒，范围10-300秒'),
+        unsafeServer.registerTool(
+            definition.name,
+            {
+                description: definition.description,
+                inputSchema: definition.inputSchema,
             },
-        },
-        async (args) => {
-            const input = WaitLoginInputSchema.parse(args);
-            const result = await authTools.waitLogin(input);
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
-        }
-    );
+            async (args: unknown) => {
+                const result = await handler(args);
+                return normalizeToolResponse(result);
+            }
+        );
+    }
+}
 
-    // login_with_browser - 弹出浏览器登录
-    server.registerTool(
-        'login_with_browser',
-        {
-            description: '弹出浏览器窗口进行登录（备用方式，仅在无法使用 login_qrcode 时使用）。适用于本地开发环境，会弹出浏览器窗口让用户直接扫码登录。',
-            inputSchema: {
-                timeoutSeconds: z.number().min(10).max(300).optional().default(180)
-                    .describe('等待超时时间（秒），默认180秒，范围10-300秒'),
-            },
-        },
-        async (args) => {
-            const input = BrowserLoginInputSchema.parse(args);
-            const result = await authTools.loginWithBrowser(input);
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
-        }
-    );
+/**
+ * 规范化工具响应，兼容所有 handler 输出
+ */
+function normalizeToolResponse(result: unknown): ToolResponse {
+    if (!result || typeof result !== 'object') {
+        throw new Error('工具处理器返回了无效结果');
+    }
 
-    // ========== 元数据工具 ==========
+    const response = result as ToolResponse;
 
-    // list_case_types - 列出案件类型
-    server.registerTool(
-        'list_case_types',
-        {
-            description: '列出所有可用的案件类型。返回案件类型的代码、中文名称和描述。',
-        },
-        async () => {
-            const result = metadataTools.listCaseTypes();
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
-        }
-    );
+    if (!Array.isArray(response.content)) {
+        throw new Error('工具处理器返回的 content 格式无效');
+    }
 
-    // list_court_levels - 列出法院级别
-    server.registerTool(
-        'list_court_levels',
-        {
-            description: '列出所有可用的法院级别。返回法院级别的代码、中文名称和描述。',
-        },
-        async () => {
-            const result = metadataTools.listCourtLevels();
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
-        }
-    );
-
-    // ========== 搜索工具 ==========
-
-    // search_documents - 搜索文书
-    server.registerTool(
-        'search_documents',
-        {
-            description: `搜索裁判文书。支持关键词搜索和多种筛选条件（案件类型、法院级别、裁判年份/日期范围、法院省份、审理法院）。
-
-使用前请确保已登录（调用 login_status 检查状态，未登录则调用 login_qrcode 获取二维码）。
-
-筛选条件使用AND逻辑组合，即返回的文书必须同时满足所有指定的筛选条件。
-
-日期筛选说明：
-- judgmentYear: 按整年筛选（如2024），通过结果页左侧树实现
-- startDate/endDate: 按精确日期范围筛选（如2024-01-01至2024-06-30），通过高级检索实现
-- 如果同时指定了judgmentYear和startDate/endDate，优先使用日期范围
-
-注意：关键词应只包含案由或搜索词（如"劳动合同纠纷"），地区信息应通过province参数传递。`,
-            inputSchema: {
-                keyword: z.string().min(1).describe('搜索关键词（案由或关键词），必填。注意：不要在关键词中包含地区信息，地区应使用province参数'),
-                caseType: z.enum(['xingshi', 'minshi', 'xingzheng', 'peichang', 'zhixing']).optional()
-                    .describe('案件类型筛选。可选值: xingshi(刑事), minshi(民事), xingzheng(行政), peichang(赔偿), zhixing(执行)'),
-                courtLevel: z.enum(['zuigao', 'gaoji', 'zhongji', 'jiceng']).optional()
-                    .describe('法院级别筛选。可选值: zuigao(最高人民法院), gaoji(高级人民法院), zhongji(中级人民法院), jiceng(基层人民法院)'),
-                province: z.string().optional()
-                    .describe('法院省份筛选，如：北京市、河北省、黑龙江省'),
-                courtName: z.string().optional()
-                    .describe('审理法院名称筛选，如：北京市高级人民法院'),
-                judgmentYear: z.string().regex(/^\d{4}$/).optional()
-                    .describe('裁判年份筛选，格式: YYYY（如2024）。通过结果页左侧树筛选'),
-                startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
-                    .describe('裁判日期范围起始，格式: YYYY-MM-DD（如2024-01-01）。通过高级检索实现'),
-                endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
-                    .describe('裁判日期范围结束，格式: YYYY-MM-DD（如2024-12-31）。通过高级检索实现'),
-                page: z.number().int().min(1).optional().default(1)
-                    .describe('页码，默认1'),
-                pageSize: z.number().int().min(1).max(100).optional().default(20)
-                    .describe('每页数量，默认20，最大100'),
-            },
-        },
-        async (args) => {
-            const input = SearchDocumentsInputSchema.parse(args);
-            const result = await searchTools.searchDocuments(input);
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
-        }
-    );
-
-    // ========== 文书详情工具 ==========
-
-    // get_document - 获取文书详情
-    server.registerTool(
-        'get_document',
-        {
-            description: `获取裁判文书的完整内容和详细信息。
-
-使用前请确保已登录（调用 login_status 检查状态，未登录则调用 login_qrcode 获取二维码）。
-
-返回的信息包括：
-- 基本信息：文书ID、案件名称、案号、法院名称、法院级别、裁判日期、案件类型
-- 当事人信息：姓名和角色（原告/被告/上诉人等）
-- 审判人员：法官列表
-- 文书全文：完整的判决书内容
-- 案由：案件的法律案由`,
-            inputSchema: {
-                docId: z.string().min(1).describe('文书ID或案号，必填。可以从搜索结果中获取文书ID。'),
-            },
-        },
-        async (args) => {
-            const input = GetDocumentInputSchema.parse(args);
-            const result = await documentTools.getDocument(input);
-            return {
-                content: [
-                    {
-                        type: 'text' as const,
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
-        }
-    );
+    return response;
 }
 
 /**
@@ -451,3 +282,6 @@ startServer(config).catch((error) => {
     console.error('服务器启动失败:', error);
     process.exit(1);
 });
+
+
+

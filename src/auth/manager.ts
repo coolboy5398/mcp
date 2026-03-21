@@ -5,8 +5,6 @@
  */
 
 import { chromium, Browser, BrowserContext, Page, Frame } from 'playwright';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import {
     SessionStore,
     CookieInfo,
@@ -14,49 +12,8 @@ import {
     convertPlaywrightCookies,
     convertToPlaywrightCookies,
 } from './session-store.js';
-
-// Node.js console
-declare const console: Console;
-
-/**
- * 全局日志文件路径（由AuthManager初始化时设置）
- */
-let globalLogFilePath: string | null = null;
-
-/**
- * 设置日志文件路径
- */
-function setLogFilePath(sessionPath: string): void {
-    globalLogFilePath = path.join(sessionPath, 'debug.log');
-}
-
-/**
- * 写入调试日志到文件
- */
-function logToFile(message: string): void {
-    const timestamp = new Date().toISOString();
-    const logLine = `[${timestamp}] ${message}\n`;
-    
-    // 如果设置了日志路径，写入文件
-    if (globalLogFilePath) {
-        try {
-            // 确保目录存在
-            const dir = path.dirname(globalLogFilePath);
-            if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
-            }
-            
-            // 追加写入日志文件
-            fs.appendFileSync(globalLogFilePath, logLine, 'utf-8');
-        } catch (error) {
-            // 写入失败时只输出到stderr
-            console.error(`写入日志文件失败: ${error}`);
-        }
-    }
-    
-    // 同时输出到stderr
-    console.error(message);
-}
+import { AuthLogger, createAuthLogger } from './logger.js';
+import { PagePoolManager, createPagePoolManager } from './page-pool.js';
 
 /**
  * 认证状态接口
@@ -145,29 +102,17 @@ const QR_CODE_SELECTORS = {
 };
 
 /**
- * 页面池中的页面状态
- */
-interface PooledPage {
-    page: Page;
-    inUse: boolean;
-    lastUsed: number;
-}
-
-/**
  * 认证管理器类
  * 负责管理浏览器实例和用户认证状态
  */
 export class AuthManager {
     private readonly sessionStore: SessionStore;
     private readonly config: Required<Omit<AuthManagerConfig, 'sessionConfig'>>;
+    private readonly logger: AuthLogger;
     private browser: Browser | null = null;
     private context: BrowserContext | null = null;
     private page: Page | null = null;
-    
-    /** 页面池：支持并发搜索 */
-    private pagePool: PooledPage[] = [];
-    /** 页面池等待队列 */
-    private pageWaitQueue: Array<(page: Page) => void> = [];
+    private readonly pagePoolManager: PagePoolManager;
 
     constructor(config?: AuthManagerConfig) {
         this.sessionStore = new SessionStore(config?.sessionConfig);
@@ -179,11 +124,17 @@ export class AuthManager {
             pageTimeout: config?.pageTimeout ?? DEFAULT_CONFIG.pageTimeout,
             maxConcurrentPages: config?.maxConcurrentPages ?? DEFAULT_CONFIG.maxConcurrentPages,
         };
-        
-        // 初始化日志文件路径
+
         const sessionPath = config?.sessionConfig?.sessionPath ?? './session-data';
-        setLogFilePath(sessionPath);
-        logToFile('[DEBUG] AuthManager 初始化完成');
+        this.logger = createAuthLogger(sessionPath);
+        this.pagePoolManager = createPagePoolManager(
+            async () => this.getContext(),
+            this.config.pageTimeout,
+            this.config.maxConcurrentPages,
+            this.logger,
+        );
+
+        this.logger.log('[DEBUG] AuthManager 初始化完成');
     }
 
     /**
@@ -192,7 +143,7 @@ export class AuthManager {
      */
     async initBrowser(headless?: boolean): Promise<void> {
         if (this.browser) {
-            return; // 浏览器已初始化
+            return;
         }
 
         const useHeadless = headless ?? this.config.headless;
@@ -207,7 +158,6 @@ export class AuthManager {
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         });
 
-        // 尝试加载已保存的Session
         await this.loadSavedSession();
 
         this.page = await this.context.newPage();
@@ -219,25 +169,25 @@ export class AuthManager {
      */
     private async loadSavedSession(): Promise<boolean> {
         if (!this.context) {
-            logToFile('[DEBUG] loadSavedSession: context 为空');
+            this.logger.log('[DEBUG] loadSavedSession: context 为空');
             return false;
         }
 
         const cookies = await this.sessionStore.getCookies();
-        logToFile(`[DEBUG] loadSavedSession: 从session文件读取到 ${cookies.length} 个cookies`);
-        
+        this.logger.log(`[DEBUG] loadSavedSession: 从session文件读取到 ${cookies.length} 个cookies`);
+
         if (cookies.length === 0) {
-            logToFile('[DEBUG] loadSavedSession: 没有保存的cookies，需要重新登录');
+            this.logger.log('[DEBUG] loadSavedSession: 没有保存的cookies，需要重新登录');
             return false;
         }
 
         try {
             const playwrightCookies = convertToPlaywrightCookies(cookies);
             await this.context.addCookies(playwrightCookies);
-            logToFile(`[DEBUG] loadSavedSession: 成功添加 ${playwrightCookies.length} 个cookies到浏览器`);
+            this.logger.log(`[DEBUG] loadSavedSession: 成功添加 ${playwrightCookies.length} 个cookies到浏览器`);
             return true;
         } catch (error) {
-            logToFile(`加载Session到浏览器失败: ${error}`);
+            this.logger.log(`加载Session到浏览器失败: ${error}`);
             return false;
         }
     }
@@ -248,14 +198,12 @@ export class AuthManager {
      * 需求 7.4: 当存储的Token存在且未过期时，文书服务器应将其用于后续请求
      */
     async checkLoginStatus(): Promise<AuthStatus> {
-        // 首先检查本地Session是否有效
         let hasValidSession = await this.sessionStore.hasValidSession();
 
-        // 如果本地session无效，尝试从运行中的浏览器恢复
         if (!hasValidSession) {
             const recovered = await this.tryRecoverSessionFromBrowser();
             if (recovered) {
-                logToFile('[DEBUG] checkLoginStatus: 从浏览器恢复session成功');
+                this.logger.log('[DEBUG] checkLoginStatus: 从浏览器恢复session成功');
                 hasValidSession = true;
             }
         }
@@ -267,14 +215,11 @@ export class AuthManager {
             };
         }
 
-        // 检查cookies中是否包含关键cookie（SESSION或HOLDONKEY）
         const cookies = await this.sessionStore.getCookies();
-        const hasSessionCookie = cookies.some(c =>
-            c.name === 'SESSION' || c.name === 'HOLDONKEY'
-        );
-        
+        const hasSessionCookie = cookies.some(c => c.name === 'SESSION' || c.name === 'HOLDONKEY');
+
         if (!hasSessionCookie) {
-            logToFile('[DEBUG] checkLoginStatus: 没有关键cookie，session无效');
+            this.logger.log('[DEBUG] checkLoginStatus: 没有关键cookie，session无效');
             await this.sessionStore.clearSession();
             return {
                 已登录: false,
@@ -282,10 +227,8 @@ export class AuthManager {
             };
         }
 
-        // 有关键cookie，认为session可能有效
-        // 不再通过页面检测来删除session，避免误删
-        logToFile(`[DEBUG] checkLoginStatus: 发现 ${cookies.length} 个cookies，包含关键cookie，认为已登录`);
-        
+        this.logger.log(`[DEBUG] checkLoginStatus: 发现 ${cookies.length} 个cookies，包含关键cookie，认为已登录`);
+
         const remainingTTL = await this.sessionStore.getRemainingTTL();
         return {
             已登录: true,
@@ -296,157 +239,141 @@ export class AuthManager {
 
     /**
      * 尝试从运行中的浏览器恢复Session到本地文件
-     * 当本地session文件被删除但浏览器仍处于登录状态时使用
-     * @returns 是否成功恢复
      */
     private async tryRecoverSessionFromBrowser(): Promise<boolean> {
-        // 检查浏览器context是否存在
         if (!this.context) {
-            logToFile('[DEBUG] tryRecoverSessionFromBrowser: 浏览器context不存在，无法恢复');
+            this.logger.log('[DEBUG] tryRecoverSessionFromBrowser: 浏览器context不存在，无法恢复');
             return false;
         }
 
         try {
-            // 从浏览器获取cookies
             const browserCookies = await this.context.cookies('https://wenshu.court.gov.cn');
-            logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 从浏览器获取到 ${browserCookies.length} 个cookies`);
-            
+            this.logger.log(`[DEBUG] tryRecoverSessionFromBrowser: 从浏览器获取到 ${browserCookies.length} 个cookies`);
+
             if (browserCookies.length === 0) {
-                // 尝试获取所有cookies
                 const allCookies = await this.context.cookies();
-                logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 获取所有cookies共 ${allCookies.length} 个`);
-                
+                this.logger.log(`[DEBUG] tryRecoverSessionFromBrowser: 获取所有cookies共 ${allCookies.length} 个`);
+
                 if (allCookies.length === 0) {
                     return false;
                 }
-                
-                // 检查是否包含关键cookie
-                const hasKeySessionCookie = allCookies.some(c =>
-                    c.name === 'SESSION' || c.name === 'HOLDONKEY'
-                );
-                
+
+                const hasKeySessionCookie = allCookies.some(c => c.name === 'SESSION' || c.name === 'HOLDONKEY');
                 if (!hasKeySessionCookie) {
-                    logToFile('[DEBUG] tryRecoverSessionFromBrowser: 浏览器中没有关键cookie，无法恢复');
+                    this.logger.log('[DEBUG] tryRecoverSessionFromBrowser: 浏览器中没有关键cookie，无法恢复');
                     return false;
                 }
-                
-                // 恢复session到文件
+
                 const cookieInfos: CookieInfo[] = convertPlaywrightCookies(allCookies);
                 await this.sessionStore.saveSession(cookieInfos);
-                logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 已从浏览器恢复 ${cookieInfos.length} 个cookies到session文件`);
+                this.logger.log(`[DEBUG] tryRecoverSessionFromBrowser: 已从浏览器恢复 ${cookieInfos.length} 个cookies到session文件`);
                 return true;
             }
-            
-            // 检查是否包含关键cookie
-            const hasKeySessionCookie = browserCookies.some(c =>
-                c.name === 'SESSION' || c.name === 'HOLDONKEY'
-            );
-            
+
+            const hasKeySessionCookie = browserCookies.some(c => c.name === 'SESSION' || c.name === 'HOLDONKEY');
             if (!hasKeySessionCookie) {
-                logToFile('[DEBUG] tryRecoverSessionFromBrowser: 浏览器中没有关键cookie，无法恢复');
+                this.logger.log('[DEBUG] tryRecoverSessionFromBrowser: 浏览器中没有关键cookie，无法恢复');
                 return false;
             }
-            
-            // 恢复session到文件
+
             const cookieInfos: CookieInfo[] = convertPlaywrightCookies(browserCookies);
             await this.sessionStore.saveSession(cookieInfos);
-            logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 已从浏览器恢复 ${cookieInfos.length} 个cookies到session文件`);
+            this.logger.log(`[DEBUG] tryRecoverSessionFromBrowser: 已从浏览器恢复 ${cookieInfos.length} 个cookies到session文件`);
             return true;
         } catch (error) {
-            logToFile(`[DEBUG] tryRecoverSessionFromBrowser: 恢复失败: ${error}`);
+            this.logger.log(`[DEBUG] tryRecoverSessionFromBrowser: 恢复失败: ${error}`);
             return false;
         }
     }
 
     /**
-     * 检查当前页面是否已登录
-     * 采用保守策略：只有明确检测到已登录标志才返回true
+     * 判断指定URL是否为登录页
      */
-    private async isLoggedInOnPage(): Promise<boolean> {
-        if (!this.page) {
+    private isLoginPageUrl(url: string): boolean {
+        return url.includes('181010CARHS5BS3C') || url.includes('login') || url.includes('auth');
+    }
+
+    /**
+     * 检查指定页面是否已登录
+     */
+    private async isLoggedInOnPage(page?: Page): Promise<boolean> {
+        const targetPage = page ?? this.page;
+        if (!targetPage) {
             return false;
         }
 
         try {
-            // 首先检查URL：如果还在登录页面，肯定未登录
-            const url = this.page.url();
-            if (url.includes('181010CARHS5BS3C') ||
-                url.includes('login') ||
-                url.includes('auth')) {
-                logToFile(`[DEBUG] isLoggedInOnPage: URL包含登录页特征，判定为未登录: ${url}`);
+            const url = targetPage.url();
+            if (this.isLoginPageUrl(url)) {
+                this.logger.log(`[DEBUG] isLoggedInOnPage: URL包含登录页特征，判定为未登录: ${url}`);
                 return false;
             }
 
-            const frame = await this.getLoginFrame();
+            const frame = await this.getLoginFrame(targetPage);
 
-            // 检查是否存在二维码元素（存在则未登录）
-            const qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage) ||
-                                  await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
+            const qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
+                || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
             if (qrCodeElement) {
                 const isVisible = await qrCodeElement.isVisible().catch(() => false);
                 if (isVisible) {
-                    logToFile('[DEBUG] isLoggedInOnPage: 检测到二维码元素，判定为未登录');
+                    this.logger.log('[DEBUG] isLoggedInOnPage: 检测到二维码元素，判定为未登录');
                     return false;
                 }
             }
 
-            // 检查是否存在用户信息元素（通常在顶层页面或iframe中都可能出现）
-            const userInfoElement = await this.page.$(QR_CODE_SELECTORS.userInfo) ||
-                                  await frame.$(QR_CODE_SELECTORS.userInfo);
+            const userInfoElement = await targetPage.$(QR_CODE_SELECTORS.userInfo)
+                || await frame.$(QR_CODE_SELECTORS.userInfo);
             if (userInfoElement) {
                 const isVisible = await userInfoElement.isVisible().catch(() => false);
                 if (isVisible) {
-                    logToFile('[DEBUG] isLoggedInOnPage: 检测到用户信息元素，判定为已登录');
+                    this.logger.log('[DEBUG] isLoggedInOnPage: 检测到用户信息元素，判定为已登录');
                     return true;
                 }
             }
 
-            // 检查是否存在支付宝登录图标（存在则未登录）
             const alipayIcon = await frame.$('img[alt*="支付宝"], img[src*="alipay"]');
             if (alipayIcon) {
                 const isVisible = await alipayIcon.isVisible().catch(() => false);
                 if (isVisible) {
-                    logToFile('[DEBUG] isLoggedInOnPage: 检测到支付宝登录图标，判定为未登录');
+                    this.logger.log('[DEBUG] isLoggedInOnPage: 检测到支付宝登录图标，判定为未登录');
                     return false;
                 }
             }
 
-            // 默认返回false（保守策略：未明确检测到已登录就认为未登录）
-            logToFile('[DEBUG] isLoggedInOnPage: 未检测到明确的登录状态标志，默认判定为未登录');
+            this.logger.log('[DEBUG] isLoggedInOnPage: 未检测到明确的登录状态标志，默认判定为未登录');
             return false;
         } catch (error) {
-            logToFile(`[DEBUG] isLoggedInOnPage: 检查过程出错: ${error}`);
+            this.logger.log(`[DEBUG] isLoggedInOnPage: 检查过程出错: ${error}`);
             return false;
         }
     }
 
     /**
      * 获取登录frame
-     * 裁判文书网登录框嵌套在iframe中
      */
-    private async getLoginFrame(): Promise<Page | Frame> {
-        if (!this.page) {
+    private async getLoginFrame(page?: Page): Promise<Page | Frame> {
+        const targetPage = page ?? this.page;
+        if (!targetPage) {
             throw new Error('页面未初始化');
         }
 
         try {
-            const iframeElement = await this.page.$('iframe#contentIframe');
+            const iframeElement = await targetPage.$('iframe#contentIframe');
             if (iframeElement) {
                 const frame = await iframeElement.contentFrame();
                 if (frame) {
-                    return frame as unknown as Page; //甚至可以直接用Frame，它们有类似的API接口
+                    return frame as unknown as Page;
                 }
             }
         } catch (error) {
-            console.log('获取iframe失败，使用主页面:', error);
+            this.logger.log(`获取iframe失败，使用当前页面: ${error}`);
         }
 
-        return this.page;
+        return targetPage;
     }
 
     /**
      * 获取登录二维码
-     * 需求 7.2: 当用户未登录时，文书服务器应返回支付宝认证的二维码URL
      */
     async getLoginQRCode(): Promise<QRCodeInfo> {
         const maxRetries = 3;
@@ -454,35 +381,30 @@ export class AuthManager {
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                logToFile(`[DEBUG] getLoginQRCode: 第 ${attempt}/${maxRetries} 次尝试获取二维码`);
+                this.logger.log(`[DEBUG] getLoginQRCode: 第 ${attempt}/${maxRetries} 次尝试获取二维码`);
                 return await this.tryGetLoginQRCode();
             } catch (error) {
                 lastError = error instanceof Error ? error : new Error(String(error));
-                logToFile(`[DEBUG] getLoginQRCode: 第 ${attempt} 次尝试失败: ${lastError.message}`);
-                
+                this.logger.log(`[DEBUG] getLoginQRCode: 第 ${attempt} 次尝试失败: ${lastError.message}`);
+
                 if (attempt < maxRetries) {
-                    // 重试前刷新页面
-                    logToFile(`[DEBUG] getLoginQRCode: 等待2秒后重试...`);
+                    this.logger.log('[DEBUG] getLoginQRCode: 等待2秒后重试...');
                     await this.page?.waitForTimeout(2000);
-                    
-                    // 尝试刷新页面
+
                     try {
                         await this.page?.reload({ waitUntil: 'domcontentloaded' });
                     } catch {
-                        // 刷新失败则重新导航
                         await this.page?.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
                     }
                 }
             }
         }
 
-        // 所有重试都失败，抛出错误
         throw new Error(`获取二维码失败（已重试${maxRetries}次）: ${lastError?.message || '未知错误'}`);
     }
 
     /**
      * 尝试获取二维码的内部实现
-     * 如果无法找到二维码元素，抛出错误而非降级截图
      */
     private async tryGetLoginQRCode(): Promise<QRCodeInfo> {
         await this.initBrowser();
@@ -491,95 +413,73 @@ export class AuthManager {
             throw new Error('浏览器页面初始化失败');
         }
 
-        // 导航到登录页面
         await this.page.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
-
-        // 等待页面加载
         await this.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
-        
-        // 等待iframe加载
+
         try {
             await this.page.waitForSelector('iframe#contentIframe', { timeout: 10000, state: 'attached' });
-            logToFile('[DEBUG] tryGetLoginQRCode: iframe已加载');
-        } catch (e) {
-            logToFile(`[DEBUG] tryGetLoginQRCode: 等待iframe超时: ${e}`);
+            this.logger.log('[DEBUG] tryGetLoginQRCode: iframe已加载');
+        } catch (error) {
+            this.logger.log(`[DEBUG] tryGetLoginQRCode: 等待iframe超时: ${error}`);
         }
 
-        // 点击支付宝图标触发二维码显示
         await this.clickAlipayIcon();
 
-        // 获取frame
         const frame = await this.getLoginFrame();
-
-        // 显式等待支付宝二维码出现（最多等待10秒）
-        let qrCodeFound = false;
         try {
-            logToFile('[DEBUG] tryGetLoginQRCode: 等待支付宝二维码元素出现...');
-            // 优先等待精确的ID
+            this.logger.log('[DEBUG] tryGetLoginQRCode: 等待支付宝二维码元素出现...');
             await frame.waitForSelector(QR_CODE_SELECTORS.alipayQRCode, { timeout: 5000, state: 'visible' });
-            logToFile('[DEBUG] tryGetLoginQRCode: 支付宝二维码元素已出现 (alipayQRCode)');
-            qrCodeFound = true;
-        } catch (e) {
-            logToFile(`[DEBUG] tryGetLoginQRCode: 等待精确二维码超时: ${e}`);
-            // 降级：等待通用二维码
+            this.logger.log('[DEBUG] tryGetLoginQRCode: 支付宝二维码元素已出现 (alipayQRCode)');
+        } catch (error) {
+            this.logger.log(`[DEBUG] tryGetLoginQRCode: 等待精确二维码超时: ${error}`);
             try {
                 await frame.waitForSelector(QR_CODE_SELECTORS.qrCodeImage, { timeout: 5000, state: 'visible' });
-                logToFile('[DEBUG] tryGetLoginQRCode: 通用二维码元素已出现 (qrCodeImage)');
-                qrCodeFound = true;
-            } catch (e2) {
-                logToFile(`[DEBUG] tryGetLoginQRCode: 等待通用二维码也超时了: ${e2}`);
+                this.logger.log('[DEBUG] tryGetLoginQRCode: 通用二维码元素已出现 (qrCodeImage)');
+            } catch (fallbackError) {
+                this.logger.log(`[DEBUG] tryGetLoginQRCode: 等待通用二维码也超时了: ${fallbackError}`);
             }
         }
 
-        // 稍微等待渲染完成
         await this.page.waitForTimeout(1000);
 
-        // 尝试找到二维码元素并验证
-        // 优先尝试精确选择器
         let qrCodeElement = await frame.$(QR_CODE_SELECTORS.alipayQRCode);
-        
         if (!qrCodeElement) {
-            // 尝试通用选择器
             qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
                 || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
         }
 
-        // 验证二维码元素是否可见
         if (!qrCodeElement) {
-            logToFile('[DEBUG] tryGetLoginQRCode: 未找到任何二维码元素');
+            this.logger.log('[DEBUG] tryGetLoginQRCode: 未找到任何二维码元素');
             throw new Error('未找到二维码元素，请检查页面是否正常加载');
         }
 
         const isVisible = await qrCodeElement.isVisible().catch(() => false);
         if (!isVisible) {
-            logToFile('[DEBUG] tryGetLoginQRCode: 二维码元素存在但不可见');
+            this.logger.log('[DEBUG] tryGetLoginQRCode: 二维码元素存在但不可见');
             throw new Error('二维码元素不可见，可能页面未完全加载');
         }
 
-        // 验证元素尺寸，确保不是空白或过小的元素
         const boundingBox = await qrCodeElement.boundingBox();
         if (!boundingBox || boundingBox.width < 50 || boundingBox.height < 50) {
-            logToFile(`[DEBUG] tryGetLoginQRCode: 二维码元素尺寸异常: ${JSON.stringify(boundingBox)}`);
+            this.logger.log(`[DEBUG] tryGetLoginQRCode: 二维码元素尺寸异常: ${JSON.stringify(boundingBox)}`);
             throw new Error('二维码元素尺寸异常（太小或无尺寸），可能未正确加载');
         }
 
-        logToFile(`[DEBUG] tryGetLoginQRCode: 二维码元素验证通过，尺寸: ${boundingBox.width}x${boundingBox.height}`);
+        this.logger.log(`[DEBUG] tryGetLoginQRCode: 二维码元素验证通过，尺寸: ${boundingBox.width}x${boundingBox.height}`);
 
-        // 截取二维码
         const screenshot = await qrCodeElement.screenshot({ type: 'png' });
         const qrCodeBase64 = screenshot.toString('base64');
-        logToFile('[DEBUG] tryGetLoginQRCode: 成功截取二维码元素');
+        this.logger.log('[DEBUG] tryGetLoginQRCode: 成功截取二维码元素');
 
         return {
             二维码图片Base64: qrCodeBase64,
             说明: '请使用支付宝扫描二维码登录裁判文书网',
-            过期秒数: 120, // 二维码通常2分钟过期
+            过期秒数: 120,
         };
     }
 
     /**
      * 点击支付宝图标触发二维码显示
-     * 裁判文书网登录页面需要先点击支付宝图标才会显示二维码
      */
     private async clickAlipayIcon(): Promise<void> {
         if (!this.page) {
@@ -587,16 +487,15 @@ export class AuthManager {
         }
 
         const frame = await this.getLoginFrame();
-
-        // 策略1: 使用选择器直接查找支付宝图标
         const alipaySelectors = QR_CODE_SELECTORS.alipayIcon.split(', ');
+
         for (const selector of alipaySelectors) {
             try {
                 const element = await frame.$(selector);
                 if (element && await element.isVisible()) {
                     await element.click();
-                    console.log(`成功点击支付宝图标: ${selector}`);
-                    await this.page.waitForTimeout(2000); // 等待二维码加载
+                    this.logger.log(`成功点击支付宝图标: ${selector}`);
+                    await this.page.waitForTimeout(2000);
                     return;
                 }
             } catch {
@@ -604,13 +503,12 @@ export class AuthManager {
             }
         }
 
-        // 策略2: 查找包含"支付宝"文字的可点击元素
         try {
             const alipayText = frame.getByText('支付宝', { exact: false });
             const count = await alipayText.count();
             if (count > 0) {
                 await alipayText.first().click();
-                console.log('成功点击包含"支付宝"文字的元素');
+                this.logger.log('成功点击包含"支付宝"文字的元素');
                 await this.page.waitForTimeout(2000);
                 return;
             }
@@ -618,20 +516,19 @@ export class AuthManager {
             // 继续尝试其他方法
         }
 
-        // 策略3: 查找所有图片元素，通过alt或src属性识别支付宝图标
         try {
             const allImages = await frame.$$('img');
             for (const img of allImages) {
                 const alt = await img.getAttribute('alt') || '';
                 const src = await img.getAttribute('src') || '';
                 const title = await img.getAttribute('title') || '';
-                
-                if (alt.includes('支付宝') || alt.toLowerCase().includes('alipay') ||
-                    src.includes('alipay') || src.includes('zhifubao') ||
-                    title.includes('支付宝')) {
+
+                if (alt.includes('支付宝') || alt.toLowerCase().includes('alipay')
+                    || src.includes('alipay') || src.includes('zhifubao')
+                    || title.includes('支付宝')) {
                     if (await img.isVisible()) {
                         await img.click();
-                        console.log('通过图片属性识别并点击支付宝图标');
+                        this.logger.log('通过图片属性识别并点击支付宝图标');
                         await this.page.waitForTimeout(2000);
                         return;
                     }
@@ -641,24 +538,22 @@ export class AuthManager {
             // 继续尝试其他方法
         }
 
-        // 策略4: 尝试点击登录按钮（作为备选）
         try {
             const loginBtn = await frame.$(QR_CODE_SELECTORS.loginButton);
             if (loginBtn && await loginBtn.isVisible()) {
                 await loginBtn.click();
-                console.log('点击了通用登录按钮');
+                this.logger.log('点击了通用登录按钮');
                 await this.page.waitForTimeout(2000);
             }
         } catch {
             // 忽略点击失败
         }
 
-        console.log('警告: 未能找到支付宝登录图标，请检查页面结构');
+        this.logger.warn('未能找到支付宝登录图标，请检查页面结构');
     }
 
     /**
      * 等待登录完成
-     * 需求 7.3: 当用户扫码完成认证后，文书服务器应将认证Token存储到本地
      */
     async waitForLogin(timeoutSeconds: number = 120): Promise<WaitLoginResult> {
         if (!this.page) {
@@ -672,26 +567,17 @@ export class AuthManager {
         const timeoutMs = timeoutSeconds * 1000;
 
         while (Date.now() - startTime < timeoutMs) {
-            // 检查是否已登录
             const isLoggedIn = await this.isLoggedInOnPage();
-
             if (isLoggedIn) {
-                // 登录成功，保存Session
                 await this.saveCurrentSession();
-
                 return {
                     成功: true,
                     消息: '登录成功，Session已保存',
                 };
             }
 
-            // 检查页面URL变化（登录成功后通常会跳转）
             const currentUrl = this.page.url();
-            // 181010CARHS5BS3C 是登录页面的特征路径
-            if (!currentUrl.includes('181010CARHS5BS3C') &&
-                !currentUrl.includes('login') &&
-                !currentUrl.includes('auth')) {
-                // 确实已经跳转离开登录页
+            if (!this.isLoginPageUrl(currentUrl)) {
                 await this.saveCurrentSession();
                 return {
                     成功: true,
@@ -699,7 +585,6 @@ export class AuthManager {
                 };
             }
 
-            // 等待一段时间后再检查
             await this.page.waitForTimeout(2000);
         }
 
@@ -711,12 +596,10 @@ export class AuthManager {
 
     /**
      * 弹出浏览器窗口登录（有头模式）
-     * 用于本地开发和首次登录场景
      */
     async loginWithBrowser(timeoutSeconds: number = 180): Promise<WaitLoginResult> {
-        // 强制使用有头模式
         await this.closeBrowser();
-        await this.initBrowser(false); // headless = false
+        await this.initBrowser(false);
 
         if (!this.page) {
             return {
@@ -725,22 +608,15 @@ export class AuthManager {
             };
         }
 
-        // 导航到登录页面
         await this.page.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
-
-        // 等待用户手动扫码登录
         const result = await this.waitForLogin(timeoutSeconds);
 
-        // 登录成功后切换到无头模式重新初始化浏览器
-        // 不再直接关闭浏览器，而是保持session并重新初始化
         if (result.成功) {
-            logToFile('[DEBUG] loginWithBrowser: 登录成功，切换到无头模式');
-            // 保存当前session后再关闭有头浏览器
+            this.logger.log('[DEBUG] loginWithBrowser: 登录成功，切换到无头模式');
             await this.saveCurrentSession();
             await this.closeBrowser();
-            // 重新以无头模式初始化，这样后续操作可以正常进行
             await this.initBrowser(true);
-            logToFile('[DEBUG] loginWithBrowser: 已切换到无头模式');
+            this.logger.log('[DEBUG] loginWithBrowser: 已切换到无头模式');
         }
 
         return result;
@@ -751,78 +627,67 @@ export class AuthManager {
      */
     private async saveCurrentSession(): Promise<void> {
         if (!this.context) {
-            logToFile('[DEBUG] saveCurrentSession: context 为空，无法保存');
+            this.logger.log('[DEBUG] saveCurrentSession: context 为空，无法保存');
             return;
         }
 
         try {
-            // 获取裁判文书网相关的Cookies（指定URL以确保获取正确域的cookies）
             const cookies = await this.context.cookies('https://wenshu.court.gov.cn');
-            logToFile(`[DEBUG] saveCurrentSession: 从wenshu.court.gov.cn获取到 ${cookies.length} 个cookies`);
-            
-            // 如果没有获取到cookies，尝试获取所有cookies
+            this.logger.log(`[DEBUG] saveCurrentSession: 从wenshu.court.gov.cn获取到 ${cookies.length} 个cookies`);
+
             let allCookies = cookies;
             if (cookies.length === 0) {
-                logToFile('[DEBUG] saveCurrentSession: 指定URL未获取到cookies，尝试获取所有cookies');
+                this.logger.log('[DEBUG] saveCurrentSession: 指定URL未获取到cookies，尝试获取所有cookies');
                 allCookies = await this.context.cookies();
-                logToFile(`[DEBUG] saveCurrentSession: 获取到所有cookies共 ${allCookies.length} 个`);
+                this.logger.log(`[DEBUG] saveCurrentSession: 获取到所有cookies共 ${allCookies.length} 个`);
             }
-            
-            // 打印关键cookie信息（用于调试）
+
             for (const cookie of allCookies) {
-                logToFile(`[DEBUG] saveCurrentSession: cookie "${cookie.name}" domain="${cookie.domain}" value="${cookie.value.substring(0, 20)}..."`);
+                this.logger.log(`[DEBUG] saveCurrentSession: cookie "${cookie.name}" domain="${cookie.domain}" value="${cookie.value.substring(0, 20)}..."`);
             }
-            
+
             if (allCookies.length === 0) {
-                logToFile('[WARNING] saveCurrentSession: 没有获取到任何cookies！');
+                this.logger.warn('saveCurrentSession: 没有获取到任何cookies！');
                 return;
             }
-            
-            const cookieInfos: CookieInfo[] = convertPlaywrightCookies(allCookies);
 
-            // 保存到SessionStore
+            const cookieInfos: CookieInfo[] = convertPlaywrightCookies(allCookies);
             await this.sessionStore.saveSession(cookieInfos);
-            logToFile(`[DEBUG] saveCurrentSession: 已保存 ${cookieInfos.length} 个cookies到session文件`);
-            
-            // 验证保存是否成功
+            this.logger.log(`[DEBUG] saveCurrentSession: 已保存 ${cookieInfos.length} 个cookies到session文件`);
+
             const savedCookies = await this.sessionStore.getCookies();
-            logToFile(`[DEBUG] saveCurrentSession: 验证保存结果，读取到 ${savedCookies.length} 个cookies`);
+            this.logger.log(`[DEBUG] saveCurrentSession: 验证保存结果，读取到 ${savedCookies.length} 个cookies`);
         } catch (error) {
-            logToFile(`保存Session失败: ${error}`);
+            this.logger.log(`保存Session失败: ${error}`);
             throw error;
         }
     }
 
     /**
      * 获取当前浏览器页面（供其他模块使用）
-     * 包含页面状态检测和自动恢复逻辑
      */
     async getPage(): Promise<Page> {
-        // 检查浏览器和页面是否仍然有效
         if (this.page) {
             try {
-                // 尝试执行一个简单操作来验证页面是否仍然有效
                 await this.page.url();
             } catch (error) {
-                // 页面已失效，需要重新初始化
-                logToFile(`[DEBUG] getPage: 页面已失效，需要重新初始化: ${error}`);
+                this.logger.log(`[DEBUG] getPage: 页面已失效，需要重新初始化: ${error}`);
                 this.page = null;
                 this.context = null;
                 this.browser = null;
             }
         }
 
-        // 检查浏览器是否仍然连接
         if (this.browser) {
             try {
                 if (!this.browser.isConnected()) {
-                    logToFile('[DEBUG] getPage: 浏览器已断开连接，需要重新初始化');
+                    this.logger.log('[DEBUG] getPage: 浏览器已断开连接，需要重新初始化');
                     this.page = null;
                     this.context = null;
                     this.browser = null;
                 }
             } catch (error) {
-                logToFile(`[DEBUG] getPage: 检查浏览器连接失败: ${error}`);
+                this.logger.log(`[DEBUG] getPage: 检查浏览器连接失败: ${error}`);
                 this.page = null;
                 this.context = null;
                 this.browser = null;
@@ -860,114 +725,30 @@ export class AuthManager {
 
     /**
      * 从页面池获取一个可用页面（用于并发搜索）
-     * 如果池中没有可用页面且未达到最大数量，会创建新页面
-     * 如果已达到最大数量，会等待其他页面释放
-     * @returns 可用的Page实例
      */
     async acquirePage(): Promise<Page> {
-        await this.initBrowser();
-
-        if (!this.context) {
-            throw new Error('浏览器上下文初始化失败');
-        }
-
-        // 1. 先尝试从池中获取空闲页面
-        for (const pooledPage of this.pagePool) {
-            if (!pooledPage.inUse) {
-                // 检查页面是否仍然有效
-                try {
-                    pooledPage.page.url();
-                    if (!pooledPage.page.isClosed()) {
-                        pooledPage.inUse = true;
-                        pooledPage.lastUsed = Date.now();
-                        logToFile(`[DEBUG] acquirePage: 从池中获取空闲页面，当前池大小=${this.pagePool.length}`);
-                        return pooledPage.page;
-                    }
-                } catch {
-                    // 页面已失效，从池中移除
-                    const index = this.pagePool.indexOf(pooledPage);
-                    if (index > -1) {
-                        this.pagePool.splice(index, 1);
-                    }
-                }
-            }
-        }
-
-        // 2. 如果池未满，创建新页面
-        if (this.pagePool.length < this.config.maxConcurrentPages) {
-            const newPage = await this.context.newPage();
-            newPage.setDefaultTimeout(this.config.pageTimeout);
-            
-            const pooledPage: PooledPage = {
-                page: newPage,
-                inUse: true,
-                lastUsed: Date.now(),
-            };
-            this.pagePool.push(pooledPage);
-            logToFile(`[DEBUG] acquirePage: 创建新页面，当前池大小=${this.pagePool.length}/${this.config.maxConcurrentPages}`);
-            return newPage;
-        }
-
-        // 3. 池已满，等待其他页面释放
-        logToFile(`[DEBUG] acquirePage: 池已满(${this.pagePool.length}/${this.config.maxConcurrentPages})，等待页面释放...`);
-        return new Promise<Page>((resolve) => {
-            this.pageWaitQueue.push(resolve);
-        });
+        return this.pagePoolManager.acquirePage();
     }
 
     /**
      * 将页面归还到池中
-     * @param page 要归还的页面
      */
     releasePage(page: Page): void {
-        const pooledPage = this.pagePool.find(p => p.page === page);
-        if (pooledPage) {
-            pooledPage.inUse = false;
-            pooledPage.lastUsed = Date.now();
-            logToFile(`[DEBUG] releasePage: 页面已归还，当前使用中=${this.pagePool.filter(p => p.inUse).length}/${this.pagePool.length}`);
-
-            // 如果有等待的请求，分配给它
-            if (this.pageWaitQueue.length > 0) {
-                const resolve = this.pageWaitQueue.shift();
-                if (resolve) {
-                    pooledPage.inUse = true;
-                    pooledPage.lastUsed = Date.now();
-                    logToFile(`[DEBUG] releasePage: 将页面分配给等待队列中的请求`);
-                    resolve(page);
-                }
-            }
-        } else {
-            logToFile(`[DEBUG] releasePage: 页面不在池中，忽略`);
-        }
+        this.pagePoolManager.releasePage(page);
     }
 
     /**
      * 获取页面池统计信息
      */
     getPoolStats(): { total: number; inUse: number; available: number; maxSize: number } {
-        const inUse = this.pagePool.filter(p => p.inUse).length;
-        return {
-            total: this.pagePool.length,
-            inUse,
-            available: this.pagePool.length - inUse,
-            maxSize: this.config.maxConcurrentPages,
-        };
+        return this.pagePoolManager.getStats();
     }
 
     /**
      * 关闭浏览器
      */
     async closeBrowser(): Promise<void> {
-        // 先关闭页面池中的所有页面
-        for (const pooledPage of this.pagePool) {
-            try {
-                await pooledPage.page.close();
-            } catch {
-                // 忽略关闭错误
-            }
-        }
-        this.pagePool = [];
-        this.pageWaitQueue = [];
+        await this.pagePoolManager.closeAll();
 
         if (this.page) {
             await this.page.close().catch(() => { });
