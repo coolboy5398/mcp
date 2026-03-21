@@ -107,8 +107,17 @@ export class DocumentTools {
                 案由: detail.案由,
             };
         } catch (error) {
-            // 需求 3.3: 无效ID返回适当的错误消息
             if (error instanceof NotFoundError) {
+                const message = error.message || '';
+                const looksLikePermissionOrSummaryIssue = message.includes('无法获取该文书全文')
+                    || message.includes('仅返回摘要或权限提示')
+                    || message.includes('未返回可解析的正文内容')
+                    || message.includes('页面片段：');
+
+                if (looksLikePermissionOrSummaryIssue) {
+                    throw error;
+                }
+
                 throw new NotFoundError(
                     `未找到文书: ${input.docId}。get_document 仅支持真实文书ID，不支持直接传案号。`
                     + '请先调用 search_documents 搜索目标文书，并使用返回结果中的文书ID再次调用 get_document',

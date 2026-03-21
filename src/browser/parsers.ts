@@ -8,8 +8,59 @@ import {
     DocumentSummary,
     PartyInfo,
 } from '../models/index.js';
-import { NotFoundError } from '../errors/index.js';
+import {
+    AuthRequiredError,
+    NotFoundError,
+} from '../errors/index.js';
 import { PAGE_SELECTORS } from './selectors.js';
+
+const DETAIL_INVALID_HINTS = [
+    '登录',
+    '注册',
+    '返回主站',
+    '使用帮助',
+    '欢迎您，',
+    '扫码',
+    '支付宝',
+    '微信',
+    '意见建议',
+];
+
+const DETAIL_AUTH_SURFACE_HINTS = [
+    '请扫码登录',
+    '请登录后查看',
+    '登录后查看全文',
+    '扫码查看全文',
+    '支付宝扫码登录',
+    '微信扫码登录',
+    '用户登录',
+    '去登录',
+];
+
+const DETAIL_PERMISSION_HINTS = [
+    '暂无查看权限',
+    '无权查看',
+    '不可查看',
+    '仅展示摘要',
+    '仅支持查看摘要',
+    '全文请登录后查看',
+    '全文暂无法查看',
+    '当前文书暂不支持查看全文',
+    '当前文书仅提供摘要',
+    '点击下载文书',
+    '点击打印文书',
+];
+
+const DETAIL_SUMMARY_NOISE_HINTS = [
+    '点击了解更多',
+    '发布日期',
+    '浏览次数',
+    '点击下载文书',
+    '点击打印文书',
+    '公 告',
+];
+
+const MIN_VALID_DOCUMENT_TEXT_LENGTH = 120;
 
 /**
  * 解析搜索结果
@@ -90,19 +141,24 @@ export async function parseDocumentDetail(page: Page, docId: string): Promise<Do
     const 裁判日期 = await extractText(page, PAGE_SELECTORS.documentDate);
     const 案由 = await extractText(page, PAGE_SELECTORS.documentCause);
     const 文书全文 = await extractDocumentFullText(page);
+    const bodyText = await extractBodyFallbackText(page);
+
+    assertAccessibleDocumentPage({
+        docId,
+        案件名称,
+        案号,
+        法院名称,
+        文书全文,
+        bodyText,
+    });
 
     if (!案件名称 && !案号 && !文书全文) {
         console.error('[ERROR] parseDocumentDetail: 文书内容为空');
         console.error(`[ERROR] parseDocumentDetail: docId = ${docId.substring(0, 50)}...`);
 
         let pageHint = '';
-        try {
-            const bodyText = await page.$eval('body', el => el.innerText.substring(0, 200));
-            if (bodyText) {
-                pageHint = `\n页面内容: ${bodyText.replace(/\s+/g, ' ').trim()}`;
-            }
-        } catch {
-            // 忽略获取页面内容失败
+        if (bodyText) {
+            pageHint = `\n页面内容: ${bodyText.substring(0, 200).replace(/\s+/g, ' ').trim()}`;
         }
 
         throw new NotFoundError(
@@ -121,7 +177,8 @@ export async function parseDocumentDetail(page: Page, docId: string): Promise<Do
     const 当事人 = await parseParties(page);
     const 审判人员 = await parseJudges(page);
     const 法院级别 = inferCourtLevel(法院名称);
-    const 案件类型 = inferCaseType(案号, 案件名称);
+    const 案件类型 = inferCaseType(案号, 案件名称, 文书全文);
+    const 清洗后裁判日期 = normalizeJudgmentDate(裁判日期, 文书全文);
 
     return {
         文书ID: docId,
@@ -129,12 +186,12 @@ export async function parseDocumentDetail(page: Page, docId: string): Promise<Do
         案号: 案号 || '未知案号',
         法院名称: 法院名称 || '未知法院',
         法院级别,
-        裁判日期: 裁判日期 || '未知日期',
+        裁判日期: 清洗后裁判日期 || '未知日期',
         案件类型,
         当事人,
         审判人员,
         文书全文: 文书全文 || '',
-        案由: 案由 || '未知案由',
+        案由: 案由 || inferCauseFromSummary(文书全文) || '未知案由',
     };
 }
 
@@ -149,22 +206,37 @@ async function extractText(page: Page, selector: string): Promise<string> {
 
 async function extractDocumentFullText(page: Page): Promise<string> {
     const selectorCandidates = Array.from(new Set([
-        PAGE_SELECTORS.documentFullText,
-        PAGE_SELECTORS.documentContent,
+        ...PAGE_SELECTORS.documentFullText.split(',').map(selector => selector.trim()).filter(Boolean),
+        ...PAGE_SELECTORS.documentContent.split(',').map(selector => selector.trim()).filter(Boolean),
+        '.PDF_content',
+        '.ws-text',
+        '.document-body',
+        '#contentText',
+        '.PDF_box',
+        '.ws-content',
+        '.document-content',
+        '#content',
+        '.content',
     ]));
+
+    let bestText = '';
 
     for (const selector of selectorCandidates) {
         const text = await extractBestTextFromSelector(page, selector);
-        if (text) {
-            console.error(`[DEBUG] parseDocumentDetail: 文书全文提取成功，selector = ${selector}，长度 = ${text.length}`);
-            return text;
+        if (text.length > bestText.length) {
+            bestText = text;
         }
+    }
+
+    if (bestText) {
+        console.error(`[DEBUG] parseDocumentDetail: 文书全文提取成功，长度 = ${bestText.length}`);
+        return bestText;
     }
 
     const bodyText = await extractBodyFallbackText(page);
     if (bodyText) {
         console.error(`[DEBUG] parseDocumentDetail: 使用 body 兜底提取正文，长度 = ${bodyText.length}`);
-        return bodyText;
+        return cleanDocumentText(bodyText);
     }
 
     return '';
@@ -197,13 +269,13 @@ async function extractTextFromElement(element: ElementHandle): Promise<string> {
             const text = 'innerText' in node ? node.innerText : '';
             return typeof text === 'string' ? text : '';
         });
-        const normalizedInnerText = normalizeExtractedText(innerText);
+        const normalizedInnerText = cleanDocumentText(innerText);
         if (normalizedInnerText) {
             return normalizedInnerText;
         }
 
         const textContent = await element.textContent();
-        return normalizeExtractedText(textContent);
+        return cleanDocumentText(textContent);
     } catch {
         return '';
     }
@@ -236,6 +308,124 @@ function normalizeExtractedText(text: string | null | undefined): string {
         .map(line => line.trim())
         .join('\n')
         .trim();
+}
+
+function cleanDocumentText(text: string | null | undefined): string {
+    const normalized = normalizeExtractedText(text);
+    if (!normalized) {
+        return '';
+    }
+
+    const lines = normalized
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .filter(line => !DETAIL_SUMMARY_NOISE_HINTS.some(hint => line.includes(hint)));
+
+    const joined = lines.join('\n').trim();
+    return joined.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function assertAccessibleDocumentPage(params: {
+    docId: string;
+    案件名称: string;
+    案号: string;
+    法院名称: string;
+    文书全文: string;
+    bodyText: string;
+}): void {
+    const {
+        docId,
+        案件名称,
+        案号,
+        法院名称,
+        文书全文,
+        bodyText,
+    } = params;
+
+    const combined = `${案件名称}\n${案号}\n${法院名称}\n${文书全文}\n${bodyText}`;
+    const normalizedCombined = combined.replace(/\s+/g, ' ').trim();
+    const pageSnippet = normalizedCombined.substring(0, 220);
+
+    const hasGenericAuthHint = DETAIL_INVALID_HINTS.some(hint => combined.includes(hint));
+    const hasExplicitAuthSurface = DETAIL_AUTH_SURFACE_HINTS.some(hint => combined.includes(hint));
+    const hasPermissionHint = DETAIL_PERMISSION_HINTS.some(hint => combined.includes(hint));
+    const hasSummaryOnlyText = DETAIL_SUMMARY_NOISE_HINTS.some(hint => combined.includes(hint));
+    const hasCoreMetadata = Boolean(案件名称 || 案号 || 法院名称);
+    const hasDocumentBody = 文书全文.length >= MIN_VALID_DOCUMENT_TEXT_LENGTH;
+    const hasJudgmentKeywords = /(判决书|裁定书|调解书|决定书|通知书)/.test(combined);
+    const authHintDensity = DETAIL_INVALID_HINTS.filter(hint => combined.includes(hint)).length;
+    const bodyLooksLikeAuthSurface = /(扫码登录|登录后查看|请登录后查看|支付宝扫码|微信扫码|用户登录)/.test(normalizedCombined);
+
+    if ((hasExplicitAuthSurface || bodyLooksLikeAuthSurface || authHintDensity >= 3)
+        && !hasPermissionHint
+        && !hasCoreMetadata
+        && !hasDocumentBody
+        && !hasJudgmentKeywords) {
+        throw new AuthRequiredError(
+            '当前会话无法访问该文书详情，页面表现为登录/未授权入口，请重新登录后重试。'
+            + (pageSnippet ? ` 页面片段：${pageSnippet}` : ''),
+        );
+    }
+
+    if ((hasPermissionHint || hasSummaryOnlyText)
+        && !hasDocumentBody
+        && !hasJudgmentKeywords) {
+        throw new NotFoundError(
+            `当前账号无法获取该文书全文，页面可能仅返回摘要或权限提示。\n`
+            + `docId: ${docId.substring(0, 40)}...\n`
+            + (pageSnippet ? `页面片段：${pageSnippet}\n` : '')
+            + '建议：请确认该账号是否具备查看该文书全文的权限，或重新调用 search_documents 获取最新 docId 后再试。',
+        );
+    }
+
+    if (hasGenericAuthHint && !hasCoreMetadata && !hasDocumentBody && !hasJudgmentKeywords) {
+        throw new NotFoundError(
+            `当前文书详情页未返回可解析的正文内容。\n`
+            + `docId: ${docId.substring(0, 40)}...\n`
+            + (pageSnippet ? `页面片段：${pageSnippet}\n` : '')
+            + '建议：请确认当前登录态与文书访问权限是否有效，或重新搜索后再试。',
+        );
+    }
+}
+
+function normalizeJudgmentDate(dateText: string, fullText: string): string {
+    const normalizedDate = normalizeExtractedText(dateText);
+    if (normalizedDate && !/星期[一二三四五六日天]/.test(normalizedDate)) {
+        return normalizedDate;
+    }
+
+    const fullWidthDateMatch = fullText.match(/二[〇零Ｏ○][一二三四五六七八九十]{2}年[一二三四五六七八九十〇零Ｏ○]{1,3}月[一二三四五六七八九十〇零Ｏ○]{1,3}日/);
+    if (fullWidthDateMatch?.[0]) {
+        return fullWidthDateMatch[0];
+    }
+
+    const numericDateMatch = fullText.match(/20\d{2}[-年]\d{1,2}[-月]\d{1,2}日?/);
+    if (numericDateMatch?.[0]) {
+        return numericDateMatch[0];
+    }
+
+    return normalizedDate;
+}
+
+function inferCauseFromSummary(fullText: string): string {
+    const firstLines = fullText
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .slice(0, 8);
+
+    for (const line of firstLines) {
+        if (line === '案 由' || line === '案由') {
+            continue;
+        }
+
+        if (line.includes('纠纷') || line.includes('争议') || line.includes('案件')) {
+            return line;
+        }
+    }
+
+    return '';
 }
 
 async function parseParties(page: Page): Promise<PartyInfo[]> {
@@ -324,8 +514,8 @@ function inferCourtLevel(courtName: string): string {
     return '未知级别';
 }
 
-function inferCaseType(caseNo: string, caseName: string): string {
-    const combined = `${caseNo} ${caseName}`;
+function inferCaseType(caseNo: string, caseName: string, fullText: string = ''): string {
+    const combined = `${caseNo} ${caseName} ${fullText}`;
 
     if (combined.includes('刑') || combined.includes('刑事')) {
         return '刑事案件';

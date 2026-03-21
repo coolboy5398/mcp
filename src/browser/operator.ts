@@ -128,6 +128,35 @@ export class PageOperator {
     }
 
     /**
+     * 判断当前页面是否展示已登录用户信息
+     */
+    private async hasLoggedInUserInfo(): Promise<boolean> {
+        return this.page.locator(PAGE_SELECTORS.loginUserInfo).first().isVisible().catch(() => false);
+    }
+
+    /**
+     * 判断当前页面是否存在明显的登录入口或二维码
+     */
+    private async detectLoginSurface(): Promise<{
+        hasVisibleLoginContainer: boolean;
+        hasVisibleQRCode: boolean;
+        hasVisibleLoginButton: boolean;
+        hasVisibleAlipayEntry: boolean;
+    }> {
+        const hasVisibleLoginContainer = await this.page.locator(PAGE_SELECTORS.loginContainer).first().isVisible().catch(() => false);
+        const hasVisibleQRCode = await this.page.locator(PAGE_SELECTORS.loginQRCode).first().isVisible().catch(() => false);
+        const hasVisibleLoginButton = await this.page.locator(PAGE_SELECTORS.loginButton).first().isVisible().catch(() => false);
+        const hasVisibleAlipayEntry = await this.page.locator(PAGE_SELECTORS.loginAlipayEntry).first().isVisible().catch(() => false);
+
+        return {
+            hasVisibleLoginContainer,
+            hasVisibleQRCode,
+            hasVisibleLoginButton,
+            hasVisibleAlipayEntry,
+        };
+    }
+
+    /**
      * 检查是否需要登录
      */
     async checkLoginRequired(): Promise<boolean> {
@@ -137,15 +166,17 @@ export class PageOperator {
                 return true;
             }
 
-            const hasVisibleUserInfo = await this.page.locator(PAGE_SELECTORS.loginUserInfo).first().isVisible().catch(() => false);
+            const hasVisibleUserInfo = await this.hasLoggedInUserInfo();
             if (hasVisibleUserInfo) {
                 return false;
             }
 
-            const hasVisibleLoginContainer = await this.page.locator(PAGE_SELECTORS.loginContainer).first().isVisible().catch(() => false);
-            const hasVisibleQRCode = await this.page.locator(PAGE_SELECTORS.loginQRCode).first().isVisible().catch(() => false);
-            const hasVisibleLoginButton = await this.page.locator(PAGE_SELECTORS.loginButton).first().isVisible().catch(() => false);
-            const hasVisibleAlipayEntry = await this.page.locator(PAGE_SELECTORS.loginAlipayEntry).first().isVisible().catch(() => false);
+            const {
+                hasVisibleLoginContainer,
+                hasVisibleQRCode,
+                hasVisibleLoginButton,
+                hasVisibleAlipayEntry,
+            } = await this.detectLoginSurface();
 
             if (hasVisibleQRCode) {
                 return true;
@@ -875,30 +906,68 @@ export class PageOperator {
             throw new AuthRequiredError('获取文书详情需要登录，请先调用 login_qrcode 获取二维码并扫码登录');
         }
 
-        const loginRequired = await this.checkLoginRequired();
-        console.error(`[DEBUG] getDocumentDetail: 登录检测结果 = ${loginRequired}`);
-        if (loginRequired) {
+        const hasVisibleUserInfo = await this.hasLoggedInUserInfo();
+        console.error(`[DEBUG] getDocumentDetail: 页面用户信息可见 = ${hasVisibleUserInfo}`);
+
+        const {
+            hasVisibleLoginContainer,
+            hasVisibleQRCode,
+            hasVisibleLoginButton,
+            hasVisibleAlipayEntry,
+        } = await this.detectLoginSurface();
+        console.error(
+            `[DEBUG] getDocumentDetail: 登录表面特征 container=${hasVisibleLoginContainer}, qrcode=${hasVisibleQRCode}, button=${hasVisibleLoginButton}, alipay=${hasVisibleAlipayEntry}`,
+        );
+
+        if (!hasVisibleUserInfo && (hasVisibleQRCode || (hasVisibleLoginContainer && (hasVisibleLoginButton || hasVisibleAlipayEntry)))) {
             throw new AuthRequiredError('需要登录才能查看文书详情');
         }
 
-        console.error(`[DEBUG] getDocumentDetail: 等待文书内容选择器 = ${PAGE_SELECTORS.documentContent}`);
-        try {
-            await this.page.waitForSelector(PAGE_SELECTORS.documentContent, {
-                timeout: this.config.elementTimeout,
-            });
-            console.error('[DEBUG] getDocumentDetail: 文书内容选择器找到');
-        } catch {
-            console.error('[DEBUG] getDocumentDetail: 文书内容选择器未找到，打印页面诊断信息');
+        const hasVisibleDocumentContent = await this.waitForDocumentReady();
+        if (!hasVisibleDocumentContent) {
+            console.error('[DEBUG] getDocumentDetail: 文书详情页未就绪，打印页面诊断信息');
             try {
                 const bodyText = await this.page.$eval('body', (el) => el.innerText.substring(0, 500));
                 console.error(`[DEBUG] getDocumentDetail: 页面body内容（前500字符）= ${bodyText}`);
             } catch (error) {
                 console.error(`[DEBUG] getDocumentDetail: 无法获取页面body内容: ${error}`);
             }
-            throw new NotFoundError(`未找到文书: ${docId}，请检查文书ID是否正确`);
+            throw new NotFoundError(`未找到完整文书内容: ${docId}，请检查文书ID是否正确或当前登录态是否有效`);
         }
 
         return parseDocumentDetailFromPage(this.page, docId);
+    }
+
+    private async waitForDocumentReady(): Promise<boolean> {
+        const readySelectors = Array.from(new Set([
+            PAGE_SELECTORS.documentFullText,
+            PAGE_SELECTORS.documentContent,
+            PAGE_SELECTORS.documentCourt,
+            PAGE_SELECTORS.documentCaseNo,
+        ]));
+
+        for (const selector of readySelectors) {
+            try {
+                console.error(`[DEBUG] getDocumentDetail: 等待详情页选择器 = ${selector}`);
+                await this.page.waitForSelector(selector, {
+                    timeout: Math.min(this.config.elementTimeout, 5000),
+                    state: 'visible',
+                });
+
+                const previewText = await this.page.locator(selector).first().innerText().catch(() => '');
+                const normalizedPreview = previewText.replace(/\s+/g, ' ').trim();
+                console.error(`[DEBUG] getDocumentDetail: 详情页选择器命中，selector = ${selector}，preview = ${normalizedPreview.substring(0, 80)}`);
+
+                if (normalizedPreview.length >= 20
+                    || /判决书|裁定书|调解书|决定书|通知书|人民法院|案号|发布日期/.test(normalizedPreview)) {
+                    return true;
+                }
+            } catch {
+                // 继续尝试下一个选择器
+            }
+        }
+
+        return false;
     }
 
     /**

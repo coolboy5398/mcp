@@ -46,9 +46,9 @@ export const PAGE_SELECTORS = {
     documentCause: 'span.ay, .cause, .ay, .case-cause',
     documentFullText: '.PDF_content, #contentText, .full-text, .ws-text, .document-body',
 
-    loginContainer: '.login-box, .login-content, .login-panel, .login-container, .login-dialog, .login-wrapper, .login-main',
+    loginContainer: '.login-box, .login-content, .login-panel, .login-container, .login-dialog, .login-wrapper, .login-main, #contentIframe',
     loginQRCode: '#alipay-qrcode, .qrcode-container, .login-qrcode, img[src*="alipay.com"], img[id*="qrcode"], img[class*="qrcode"]',
-    loginButton: '.login-btn, button.login-btn, a.login-btn, button:has-text("登录"), a:has-text("登录")',
+    loginButton: '.login-btn, button.login-btn, a.login-btn, button:has-text("登录"), a:has-text("登录"), .login-type-item, .scan-login',
     loginUserInfo: '.user-info, .username, [class*="user-name"], .login-user',
     loginAlipayEntry: '.login-type-item.alipay, .alipay-icon, .alipay-login, img[alt*="支付宝"], img[src*="alipay"], img[src*="zhifubao"], [title*="支付宝"]',
 } as const;

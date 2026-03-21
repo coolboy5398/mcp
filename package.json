@@ -1,6 +1,6 @@
 {
     "name": "court-document-mcp",
-    "version": "1.0.3",
+    "version": "1.0.5",
     "description": "裁判文书网MCP服务器 - 使AI助手能够查询、检索和分析中国法院公开的裁判文书数据",
     "type": "module",
     "main": "dist/server.js",
