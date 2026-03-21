@@ -27,7 +27,9 @@ import {
  * 获取文书详情输入Schema
  */
 export const GetDocumentInputSchema = z.object({
-    docId: z.string().min(1, '文书ID不能为空'),
+    docId: z.string()
+        .min(1, '文书ID不能为空')
+        .describe('文书ID或案号，必填。可以从搜索结果中获取文书ID。'),
 });
 
 export type GetDocumentInput = z.infer<typeof GetDocumentInputSchema>;
@@ -139,16 +141,7 @@ export const getDocumentToolDefinition = {
 - 审判人员：法官列表
 - 文书全文：完整的判决书内容
 - 案由：案件的法律案由`,
-    inputSchema: {
-        type: 'object' as const,
-        properties: {
-            docId: {
-                type: 'string',
-                description: '文书ID或案号，必填。可以从搜索结果中获取文书ID。',
-            },
-        },
-        required: ['docId'],
-    },
+    inputSchema: GetDocumentInputSchema,
 };
 
 /**

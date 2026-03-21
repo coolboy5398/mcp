@@ -36,7 +36,11 @@ export interface LoginQRCodeOutput {
  * 等待登录输入Schema
  */
 export const WaitLoginInputSchema = z.object({
-    timeoutSeconds: z.number().min(10).max(300).optional().default(120),
+    timeoutSeconds: z.number()
+        .min(10)
+        .max(300)
+        .default(120)
+        .describe('等待超时时间（秒），默认120秒，范围10-300秒'),
 });
 
 export type WaitLoginInput = z.infer<typeof WaitLoginInputSchema>;
@@ -53,10 +57,19 @@ export interface WaitLoginOutput {
  * 浏览器登录输入Schema
  */
 export const BrowserLoginInputSchema = z.object({
-    timeoutSeconds: z.number().min(10).max(300).optional().default(180),
+    timeoutSeconds: z.number()
+        .min(10)
+        .max(300)
+        .default(180)
+        .describe('等待超时时间（秒），默认180秒，范围10-300秒'),
 });
 
 export type BrowserLoginInput = z.infer<typeof BrowserLoginInputSchema>;
+
+/**
+ * 无参数工具输入Schema
+ */
+const EmptyInputSchema = z.object({});
 
 /**
  * 浏览器登录输出接口
@@ -168,11 +181,7 @@ export class AuthTools {
 export const loginStatusToolDefinition = {
     name: 'login_status',
     description: '检查当前登录状态。返回是否已登录以及Session剩余有效时间。',
-    inputSchema: {
-        type: 'object' as const,
-        properties: {},
-        required: [] as string[],
-    },
+    inputSchema: EmptyInputSchema,
 };
 
 /**
@@ -181,11 +190,7 @@ export const loginStatusToolDefinition = {
 export const loginQRCodeToolDefinition = {
     name: 'login_qrcode',
     description: '获取支付宝扫码登录的二维码图片（首选登录方式）。返回Base64编码的二维码图片，用户需要使用支付宝扫码登录。',
-    inputSchema: {
-        type: 'object' as const,
-        properties: {},
-        required: [] as string[],
-    },
+    inputSchema: EmptyInputSchema,
 };
 
 /**
@@ -194,17 +199,7 @@ export const loginQRCodeToolDefinition = {
 export const waitLoginToolDefinition = {
     name: 'wait_login',
     description: '等待用户扫码登录完成。在获取二维码后调用此工具等待用户完成扫码认证。',
-    inputSchema: {
-        type: 'object' as const,
-        properties: {
-            timeoutSeconds: {
-                type: 'number',
-                description: '等待超时时间（秒），默认120秒，范围10-300秒',
-                default: 120,
-            },
-        },
-        required: [] as string[],
-    },
+    inputSchema: WaitLoginInputSchema,
 };
 
 /**
@@ -213,17 +208,7 @@ export const waitLoginToolDefinition = {
 export const loginWithBrowserToolDefinition = {
     name: 'login_with_browser',
     description: '弹出浏览器窗口进行登录（备用方式，仅在无法使用 login_qrcode 时使用）。适用于本地开发环境，会弹出浏览器窗口让用户直接扫码登录。',
-    inputSchema: {
-        type: 'object' as const,
-        properties: {
-            timeoutSeconds: {
-                type: 'number',
-                description: '等待超时时间（秒），默认180秒，范围10-300秒',
-                default: 180,
-            },
-        },
-        required: [] as string[],
-    },
+    inputSchema: BrowserLoginInputSchema,
 };
 
 /**

@@ -31,16 +31,44 @@ import {
  * 搜索文书输入Schema
  */
 export const SearchDocumentsInputSchema = z.object({
-    keyword: z.string().min(1, '搜索关键词不能为空'),
-    caseType: z.string().optional(),
-    courtLevel: z.string().optional(),
-    province: z.string().optional(),
-    courtName: z.string().optional(),
-    judgmentYear: z.string().regex(/^\d{4}$/, '年份格式应为YYYY，如2024').optional(),
-    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为YYYY-MM-DD').optional(),
-    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为YYYY-MM-DD').optional(),
-    page: z.number().int().min(1).optional().default(1),
-    pageSize: z.number().int().min(1).max(100).optional().default(20),
+    keyword: z.string()
+        .min(1, '搜索关键词不能为空')
+        .describe('搜索关键词（案由或关键词），必填。注意：不要在关键词中包含地区信息，地区应使用province参数'),
+    caseType: z.enum(['xingshi', 'minshi', 'xingzheng', 'peichang', 'zhixing'])
+        .optional()
+        .describe('案件类型筛选。可选值: xingshi(刑事), minshi(民事), xingzheng(行政), peichang(赔偿), zhixing(执行)'),
+    courtLevel: z.enum(['zuigao', 'gaoji', 'zhongji', 'jiceng'])
+        .optional()
+        .describe('法院级别筛选。可选值: zuigao(最高人民法院), gaoji(高级人民法院), zhongji(中级人民法院), jiceng(基层人民法院)'),
+    province: z.string()
+        .optional()
+        .describe('法院省份筛选，如：北京市、河北省、黑龙江省'),
+    courtName: z.string()
+        .optional()
+        .describe('审理法院名称筛选，如：北京市高级人民法院'),
+    judgmentYear: z.string()
+        .regex(/^\d{4}$/, '年份格式应为YYYY，如2024')
+        .optional()
+        .describe('裁判年份筛选，格式: YYYY（如2024）。通过结果页左侧树筛选'),
+    startDate: z.string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为YYYY-MM-DD')
+        .optional()
+        .describe('裁判日期范围起始，格式: YYYY-MM-DD（如2024-01-01）。通过高级检索实现'),
+    endDate: z.string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为YYYY-MM-DD')
+        .optional()
+        .describe('裁判日期范围结束，格式: YYYY-MM-DD（如2024-12-31）。通过高级检索实现'),
+    page: z.number()
+        .int()
+        .min(1)
+        .default(1)
+        .describe('页码，默认1'),
+    pageSize: z.number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(20)
+        .describe('每页数量，默认20，最大100'),
 });
 
 export type SearchDocumentsInput = z.infer<typeof SearchDocumentsInputSchema>;
@@ -214,59 +242,7 @@ export const searchDocumentsToolDefinition = {
 - 如果同时指定了judgmentYear和startDate/endDate，优先使用日期范围
 
 注意：关键词应只包含案由或搜索词（如"劳动合同纠纷"），地区信息应通过province参数传递。`,
-    inputSchema: {
-        type: 'object' as const,
-        properties: {
-            keyword: {
-                type: 'string',
-                description: '搜索关键词（案由或关键词），必填。注意：不要在关键词中包含地区信息，地区应使用province参数',
-            },
-            caseType: {
-                type: 'string',
-                description: '案件类型筛选。可选值: xingshi(刑事), minshi(民事), xingzheng(行政), peichang(赔偿), zhixing(执行)',
-                enum: ['xingshi', 'minshi', 'xingzheng', 'peichang', 'zhixing'],
-            },
-            courtLevel: {
-                type: 'string',
-                description: '法院级别筛选。可选值: zuigao(最高人民法院), gaoji(高级人民法院), zhongji(中级人民法院), jiceng(基层人民法院)',
-                enum: ['zuigao', 'gaoji', 'zhongji', 'jiceng'],
-            },
-            province: {
-                type: 'string',
-                description: '法院省份筛选，如：北京市、河北省、黑龙江省',
-            },
-            courtName: {
-                type: 'string',
-                description: '审理法院名称筛选，如：北京市高级人民法院',
-            },
-            judgmentYear: {
-                type: 'string',
-                description: '裁判年份筛选，格式: YYYY（如2024）。通过结果页左侧树筛选',
-                pattern: '^\\d{4}$',
-            },
-            startDate: {
-                type: 'string',
-                description: '裁判日期范围起始，格式: YYYY-MM-DD（如2024-01-01）。通过高级检索实现',
-                pattern: '^\\d{4}-\\d{2}-\\d{2}$',
-            },
-            endDate: {
-                type: 'string',
-                description: '裁判日期范围结束，格式: YYYY-MM-DD（如2024-12-31）。通过高级检索实现',
-                pattern: '^\\d{4}-\\d{2}-\\d{2}$',
-            },
-            page: {
-                type: 'number',
-                description: '页码，默认1',
-                default: 1,
-            },
-            pageSize: {
-                type: 'number',
-                description: '每页数量，默认20，最大100',
-                default: 20,
-            },
-        },
-        required: ['keyword'],
-    },
+    inputSchema: SearchDocumentsInputSchema,
 };
 
 /**

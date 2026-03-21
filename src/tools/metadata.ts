@@ -4,6 +4,7 @@
  * 需求: 4.1, 4.2, 4.3
  */
 
+import { z } from 'zod';
 import {
     CaseTypeInfo,
     CourtLevelInfo,
@@ -61,16 +62,17 @@ export class MetadataTools {
 }
 
 /**
+ * 无参数工具输入Schema
+ */
+const EmptyInputSchema = z.object({});
+
+/**
  * MCP工具定义 - list_case_types
  */
 export const listCaseTypesToolDefinition = {
     name: 'list_case_types',
     description: '列出所有可用的案件类型。返回案件类型的代码、中文名称和描述。',
-    inputSchema: {
-        type: 'object' as const,
-        properties: {},
-        required: [] as string[],
-    },
+    inputSchema: EmptyInputSchema,
 };
 
 /**
@@ -79,11 +81,7 @@ export const listCaseTypesToolDefinition = {
 export const listCourtLevelsToolDefinition = {
     name: 'list_court_levels',
     description: '列出所有可用的法院级别。返回法院级别的代码、中文名称和描述。',
-    inputSchema: {
-        type: 'object' as const,
-        properties: {},
-        required: [] as string[],
-    },
+    inputSchema: EmptyInputSchema,
 };
 
 /**

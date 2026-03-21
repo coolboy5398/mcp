@@ -43,7 +43,7 @@ interface ServerConfig {
  */
 const DEFAULT_CONFIG: ServerConfig = {
     name: 'court-document-server',
-    version: '1.0.0',
+    version: '1.0.1',
     sessionPath: './session-data',
     headless: true,
 };
@@ -72,7 +72,7 @@ interface ToolResponse {
 interface ToolDefinition {
     name: ToolName;
     description: string;
-    inputSchema?: Record<string, unknown>;
+    inputSchema?: unknown;
 }
 
 /**
