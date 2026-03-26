@@ -37,6 +37,13 @@ const DETAIL_AUTH_SURFACE_HINTS = [
     '去登录',
 ];
 
+const DETAIL_LOGGED_IN_HINTS = [
+    '欢迎您，',
+    '退出',
+    '个人中心',
+    '我的收藏',
+];
+
 const DETAIL_PERMISSION_HINTS = [
     '暂无查看权限',
     '无权查看',
@@ -349,6 +356,7 @@ function assertAccessibleDocumentPage(params: {
 
     const hasGenericAuthHint = DETAIL_INVALID_HINTS.some(hint => combined.includes(hint));
     const hasExplicitAuthSurface = DETAIL_AUTH_SURFACE_HINTS.some(hint => combined.includes(hint));
+    const hasLoggedInHeader = DETAIL_LOGGED_IN_HINTS.some(hint => combined.includes(hint));
     const hasPermissionHint = DETAIL_PERMISSION_HINTS.some(hint => combined.includes(hint));
     const hasSummaryOnlyText = DETAIL_SUMMARY_NOISE_HINTS.some(hint => combined.includes(hint));
     const hasCoreMetadata = Boolean(案件名称 || 案号 || 法院名称);
@@ -357,7 +365,19 @@ function assertAccessibleDocumentPage(params: {
     const authHintDensity = DETAIL_INVALID_HINTS.filter(hint => combined.includes(hint)).length;
     const bodyLooksLikeAuthSurface = /(扫码登录|登录后查看|请登录后查看|支付宝扫码|微信扫码|用户登录)/.test(normalizedCombined);
 
+    if ((hasPermissionHint || hasSummaryOnlyText)
+        && !hasDocumentBody
+        && !hasJudgmentKeywords) {
+        throw new NotFoundError(
+            `当前账号已登录，但该文书详情页仅返回公告、摘要或权限提示，未返回可解析全文。\n`
+            + `docId: ${docId.substring(0, 40)}...\n`
+            + (pageSnippet ? `页面片段：${pageSnippet}\n` : '')
+            + '建议：请确认该账号是否具备查看该文书全文的权限，或重新调用 search_documents 获取最新 docId 后再试。',
+        );
+    }
+
     if ((hasExplicitAuthSurface || bodyLooksLikeAuthSurface || authHintDensity >= 3)
+        && !hasLoggedInHeader
         && !hasPermissionHint
         && !hasCoreMetadata
         && !hasDocumentBody
@@ -368,24 +388,24 @@ function assertAccessibleDocumentPage(params: {
         );
     }
 
-    if ((hasPermissionHint || hasSummaryOnlyText)
-        && !hasDocumentBody
-        && !hasJudgmentKeywords) {
-        throw new NotFoundError(
-            `当前账号无法获取该文书全文，页面可能仅返回摘要或权限提示。\n`
-            + `docId: ${docId.substring(0, 40)}...\n`
-            + (pageSnippet ? `页面片段：${pageSnippet}\n` : '')
-            + '建议：请确认该账号是否具备查看该文书全文的权限，或重新调用 search_documents 获取最新 docId 后再试。',
-        );
-    }
+    if (hasGenericAuthHint && !hasDocumentBody && !hasJudgmentKeywords) {
+        if (hasLoggedInHeader) {
+            throw new NotFoundError(
+                `当前账号已登录，但该文书详情页未返回可解析正文，当前更像公告或摘要页。\n`
+                + `docId: ${docId.substring(0, 40)}...\n`
+                + (pageSnippet ? `页面片段：${pageSnippet}\n` : '')
+                + '建议：请确认该文书是否对当前账号开放全文访问。',
+            );
+        }
 
-    if (hasGenericAuthHint && !hasCoreMetadata && !hasDocumentBody && !hasJudgmentKeywords) {
-        throw new NotFoundError(
-            `当前文书详情页未返回可解析的正文内容。\n`
-            + `docId: ${docId.substring(0, 40)}...\n`
-            + (pageSnippet ? `页面片段：${pageSnippet}\n` : '')
-            + '建议：请确认当前登录态与文书访问权限是否有效，或重新搜索后再试。',
-        );
+        if (!hasCoreMetadata) {
+            throw new NotFoundError(
+                `当前文书详情页未返回可解析的正文内容。\n`
+                + `docId: ${docId.substring(0, 40)}...\n`
+                + (pageSnippet ? `页面片段：${pageSnippet}\n` : '')
+                + '建议：请确认当前登录态与文书访问权限是否有效，或重新搜索后再试。',
+            );
+        }
     }
 }
 
