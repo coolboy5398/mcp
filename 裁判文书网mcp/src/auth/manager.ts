@@ -142,26 +142,69 @@ export class AuthManager {
      * 需求 7.1: 文书服务器应提供检查当前登录状态的工具
      */
     async initBrowser(headless?: boolean): Promise<void> {
-        if (this.browser) {
-            return;
-        }
-
         const useHeadless = headless ?? this.config.headless;
 
-        this.browser = await chromium.launch({
-            headless: useHeadless,
-            timeout: this.config.browserTimeout,
-        });
+        if (this.browser) {
+            try {
+                if (!this.browser.isConnected()) {
+                    this.logger.log('[DEBUG] initBrowser: 浏览器连接已断开，准备重新初始化');
+                    this.browser = null;
+                    this.context = null;
+                    this.page = null;
+                }
+            } catch (error) {
+                this.logger.log(`[DEBUG] initBrowser: 检查浏览器连接失败，准备重新初始化: ${error}`);
+                this.browser = null;
+                this.context = null;
+                this.page = null;
+            }
+        }
 
-        this.context = await this.browser.newContext({
-            viewport: { width: 1280, height: 720 },
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        });
+        if (this.context) {
+            try {
+                await this.context.cookies();
+            } catch (error) {
+                this.logger.log(`[DEBUG] initBrowser: 浏览器上下文已失效，准备重新创建: ${error}`);
+                this.context = null;
+                this.page = null;
+            }
+        }
 
-        await this.loadSavedSession();
+        if (this.page?.isClosed()) {
+            this.logger.log('[DEBUG] initBrowser: 页面已关闭，准备重新创建');
+            this.page = null;
+        }
 
-        this.page = await this.context.newPage();
-        this.page.setDefaultTimeout(this.config.pageTimeout);
+        if (!this.browser) {
+            this.browser = await chromium.launch({
+                headless: useHeadless,
+                timeout: this.config.browserTimeout,
+            });
+        }
+
+        const browser = this.browser;
+        if (!browser) {
+            throw new Error('浏览器实例初始化失败');
+        }
+
+        if (!this.context) {
+            this.context = await browser.newContext({
+                viewport: { width: 1280, height: 720 },
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            });
+
+            await this.loadSavedSession();
+        }
+
+        const context = this.context;
+        if (!context) {
+            throw new Error('浏览器上下文初始化失败');
+        }
+
+        if (!this.page) {
+            this.page = await context.newPage();
+            this.page.setDefaultTimeout(this.config.pageTimeout);
+        }
     }
 
     /**
@@ -389,12 +432,16 @@ export class AuthManager {
 
                 if (attempt < maxRetries) {
                     this.logger.log('[DEBUG] getLoginQRCode: 等待2秒后重试...');
-                    await this.page?.waitForTimeout(2000);
+
+                    const page = await this.getPage();
+                    await page.waitForTimeout(2000).catch(() => { });
 
                     try {
-                        await this.page?.reload({ waitUntil: 'domcontentloaded' });
-                    } catch {
-                        await this.page?.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
+                        await page.reload({ waitUntil: 'domcontentloaded' });
+                    } catch (reloadError) {
+                        this.logger.log(`[DEBUG] getLoginQRCode: reload失败，改为重新打开登录页: ${reloadError}`);
+                        const recoveredPage = await this.getPage();
+                        await recoveredPage.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
                     }
                 }
             }
@@ -407,25 +454,21 @@ export class AuthManager {
      * 尝试获取二维码的内部实现
      */
     private async tryGetLoginQRCode(): Promise<QRCodeInfo> {
-        await this.initBrowser();
+        const page = await this.getPage();
 
-        if (!this.page) {
-            throw new Error('浏览器页面初始化失败');
-        }
-
-        await this.page.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
-        await this.page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
+        await page.goto(this.config.loginUrl, { waitUntil: 'domcontentloaded' });
+        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
 
         try {
-            await this.page.waitForSelector('iframe#contentIframe', { timeout: 10000, state: 'attached' });
+            await page.waitForSelector('iframe#contentIframe', { timeout: 10000, state: 'attached' });
             this.logger.log('[DEBUG] tryGetLoginQRCode: iframe已加载');
         } catch (error) {
             this.logger.log(`[DEBUG] tryGetLoginQRCode: 等待iframe超时: ${error}`);
         }
 
-        await this.clickAlipayIcon();
+        await this.clickAlipayIcon(page);
 
-        const frame = await this.getLoginFrame();
+        const frame = await this.getLoginFrame(page);
         try {
             this.logger.log('[DEBUG] tryGetLoginQRCode: 等待支付宝二维码元素出现...');
             await frame.waitForSelector(QR_CODE_SELECTORS.alipayQRCode, { timeout: 5000, state: 'visible' });
@@ -440,7 +483,7 @@ export class AuthManager {
             }
         }
 
-        await this.page.waitForTimeout(1000);
+        await page.waitForTimeout(1000);
 
         let qrCodeElement = await frame.$(QR_CODE_SELECTORS.alipayQRCode);
         if (!qrCodeElement) {
@@ -481,12 +524,13 @@ export class AuthManager {
     /**
      * 点击支付宝图标触发二维码显示
      */
-    private async clickAlipayIcon(): Promise<void> {
-        if (!this.page) {
+    private async clickAlipayIcon(page?: Page): Promise<void> {
+        const targetPage = page ?? this.page;
+        if (!targetPage) {
             return;
         }
 
-        const frame = await this.getLoginFrame();
+        const frame = await this.getLoginFrame(targetPage);
         const alipaySelectors = QR_CODE_SELECTORS.alipayIcon.split(', ');
 
         for (const selector of alipaySelectors) {
@@ -495,7 +539,7 @@ export class AuthManager {
                 if (element && await element.isVisible()) {
                     await element.click();
                     this.logger.log(`成功点击支付宝图标: ${selector}`);
-                    await this.page.waitForTimeout(2000);
+                    await targetPage.waitForTimeout(2000);
                     return;
                 }
             } catch {
@@ -509,7 +553,7 @@ export class AuthManager {
             if (count > 0) {
                 await alipayText.first().click();
                 this.logger.log('成功点击包含"支付宝"文字的元素');
-                await this.page.waitForTimeout(2000);
+                await targetPage.waitForTimeout(2000);
                 return;
             }
         } catch {
@@ -529,7 +573,7 @@ export class AuthManager {
                     if (await img.isVisible()) {
                         await img.click();
                         this.logger.log('通过图片属性识别并点击支付宝图标');
-                        await this.page.waitForTimeout(2000);
+                        await targetPage.waitForTimeout(2000);
                         return;
                     }
                 }
@@ -543,7 +587,7 @@ export class AuthManager {
             if (loginBtn && await loginBtn.isVisible()) {
                 await loginBtn.click();
                 this.logger.log('点击了通用登录按钮');
-                await this.page.waitForTimeout(2000);
+                await targetPage.waitForTimeout(2000);
             }
         } catch {
             // 忽略点击失败

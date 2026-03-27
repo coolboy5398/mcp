@@ -21,6 +21,10 @@ export interface LoginStatusOutput {
     已登录: boolean;
     消息: string;
     剩余有效时间?: number;
+    需要扫码?: boolean;
+    二维码图片?: string;
+    说明?: string;
+    过期秒数?: number;
 }
 
 /**
@@ -80,6 +84,32 @@ export interface BrowserLoginOutput {
 }
 
 /**
+ * 一站式登录输入Schema
+ */
+export const EnsureLoginInputSchema = z.object({
+    timeoutSeconds: z.number()
+        .min(10)
+        .max(300)
+        .default(120)
+        .describe('等待登录超时时间（秒），默认120秒，范围10-300秒'),
+});
+
+export type EnsureLoginInput = z.infer<typeof EnsureLoginInputSchema>;
+
+/**
+ * 一站式登录输出接口
+ */
+export interface EnsureLoginOutput {
+    已登录: boolean;
+    需要扫码: boolean;
+    消息: string;
+    剩余有效时间?: number;
+    二维码图片?: string;
+    说明?: string;
+    过期秒数?: number;
+}
+
+/**
  * 认证工具类
  * 封装所有认证相关的MCP工具实现
  */
@@ -99,8 +129,11 @@ export class AuthTools {
             const status: AuthStatus = await this.authManager.checkLoginStatus();
             return {
                 已登录: status.已登录,
-                消息: status.消息,
+                消息: status.已登录
+                    ? status.消息
+                    : '未登录或Session已过期，请调用 ensure_login 或 login_qrcode 获取二维码',
                 剩余有效时间: status.剩余有效时间,
+                需要扫码: !status.已登录,
             };
         } catch (error) {
             const mcpError = toMCPError(error);
@@ -149,6 +182,33 @@ export class AuthTools {
     }
 
     /**
+     * 一站式登录工具
+     * 已登录时直接返回状态，未登录时直接返回二维码图片
+     */
+    async ensureLogin(input: EnsureLoginInput): Promise<EnsureLoginOutput> {
+        const status: AuthStatus = await this.authManager.checkLoginStatus();
+
+        if (status.已登录) {
+            return {
+                已登录: true,
+                需要扫码: false,
+                消息: status.消息,
+                剩余有效时间: status.剩余有效时间,
+            };
+        }
+
+        const qrInfo: QRCodeInfo = await this.authManager.getLoginQRCode();
+        return {
+            已登录: false,
+            需要扫码: true,
+            消息: `请使用支付宝扫码登录，然后调用 wait_login 完成登录确认（超时建议 ${input.timeoutSeconds} 秒）`,
+            二维码图片: qrInfo.二维码图片Base64,
+            说明: qrInfo.说明,
+            过期秒数: qrInfo.过期秒数,
+        };
+    }
+
+    /**
      * 关闭浏览器
      */
     async closeBrowser(): Promise<void> {
@@ -180,7 +240,7 @@ export class AuthTools {
  */
 export const loginStatusToolDefinition = {
     name: 'login_status',
-    description: '检查当前登录状态。返回是否已登录以及Session剩余有效时间。',
+    description: '检查当前登录状态。仅返回状态信息；若未登录，请调用 ensure_login 或 login_qrcode 获取支付宝扫码二维码。',
     inputSchema: EmptyInputSchema,
 };
 
@@ -212,6 +272,15 @@ export const loginWithBrowserToolDefinition = {
 };
 
 /**
+ * MCP工具定义 - ensure_login
+ */
+export const ensureLoginToolDefinition = {
+    name: 'ensure_login',
+    description: '一站式检查登录状态。若已登录则直接返回状态；若未登录则直接返回支付宝扫码二维码图片，不弹出浏览器。',
+    inputSchema: EnsureLoginInputSchema,
+};
+
+/**
  * 所有认证工具定义
  */
 export const authToolDefinitions = [
@@ -219,6 +288,7 @@ export const authToolDefinitions = [
     loginQRCodeToolDefinition,
     waitLoginToolDefinition,
     loginWithBrowserToolDefinition,
+    ensureLoginToolDefinition,
 ];
 
 /**
@@ -296,6 +366,44 @@ export function createAuthToolHandlers(authManager?: AuthManager) {
                             text: JSON.stringify(result, null, 2),
                         },
                     ],
+                };
+            } catch (error) {
+                return createErrorResponse(error);
+            }
+        },
+
+        ensure_login: async (args: unknown) => {
+            try {
+                const input = EnsureLoginInputSchema.parse(args);
+                const result = await tools.ensureLogin(input);
+                const textPayload = {
+                    已登录: result.已登录,
+                    需要扫码: result.需要扫码,
+                    消息: result.消息,
+                    剩余有效时间: result.剩余有效时间,
+                    说明: result.说明,
+                    过期秒数: result.过期秒数,
+                };
+
+                return {
+                    content: result.二维码图片
+                        ? [
+                            {
+                                type: 'text' as const,
+                                text: JSON.stringify(textPayload, null, 2),
+                            },
+                            {
+                                type: 'image' as const,
+                                data: result.二维码图片,
+                                mimeType: 'image/png',
+                            },
+                        ]
+                        : [
+                            {
+                                type: 'text' as const,
+                                text: JSON.stringify(textPayload, null, 2),
+                            },
+                        ],
                 };
             } catch (error) {
                 return createErrorResponse(error);
