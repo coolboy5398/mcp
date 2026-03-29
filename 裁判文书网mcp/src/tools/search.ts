@@ -16,6 +16,7 @@ import {
     PageOperator,
     SearchParams,
     SearchFilters,
+    DEFAULT_OPERATOR_CONFIG,
 } from '../browser/index.js';
 import {
     AuthManager,
@@ -127,6 +128,11 @@ export class SearchTools {
         const page = await this.authManager.acquirePage();
 
         try {
+            const recovered = await this.authManager.recoverPageLogin(page, DEFAULT_OPERATOR_CONFIG.searchUrl);
+            if (!recovered) {
+                throw new AuthRequiredError('当前会话未能在搜索页恢复为有效登录态，请先重新调用 login_qrcode 获取二维码并扫码登录');
+            }
+
             // 创建页面操作器
             const operator = new PageOperator(page);
 
@@ -138,8 +144,22 @@ export class SearchTools {
                 filters: this.buildFilters(input),
             };
 
-            // 执行搜索
-            const result: SearchResponse = await operator.searchDocuments(searchParams);
+            let result: SearchResponse;
+            try {
+                // 执行搜索
+                result = await operator.searchDocuments(searchParams);
+            } catch (error) {
+                if (!(error instanceof AuthRequiredError)) {
+                    throw error;
+                }
+
+                const retryRecovered = await this.authManager.recoverPageLogin(page, DEFAULT_OPERATOR_CONFIG.searchUrl);
+                if (!retryRecovered) {
+                    throw new AuthRequiredError('搜索页登录态已失效，请先重新调用 login_qrcode 获取二维码并扫码登录');
+                }
+
+                result = await operator.searchDocuments(searchParams);
+            }
 
             // 需求 1.3: 没有结果时返回空列表并附带描述性消息
             if (result.documents.length === 0) {

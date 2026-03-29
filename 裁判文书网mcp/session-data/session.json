@@ -1,0 +1,26 @@
+{
+  "cookies": [
+    {
+      "name": "wzws_reurl",
+      "value": "L3dlYnNpdGUvY29tbW9uL3BsdWdpbnMvbGF5dWkvY3NzL21vZHVsZXMvbGF5ZGF0ZS9kZWZhdWx0L2xheWRhdGUuY3NzP3Y9NS4wLjk=",
+      "domain": "wenshu.court.gov.cn",
+      "path": "/",
+      "expires": 1774601433.839202,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "SESSION",
+      "value": "ae7d05c4-6707-4a9b-b4f7-cc4d0f3ae1d3",
+      "domain": "wenshu.court.gov.cn",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "创建时间": "2026-03-27T08:47:10.524Z",
+  "过期时间": "2026-03-28T08:47:10.524Z"
+}

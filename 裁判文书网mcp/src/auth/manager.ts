@@ -88,15 +88,17 @@ const QR_CODE_SELECTORS = {
     /** 二维码图片选择器 */
     qrCodeImage: '#alipay-qrcode, img[src*="alipay.com"], img[id*="qrcode"], img[class*="qrcode"]',
     /** 二维码容器选择器 */
-    qrCodeContainer: '.qrcode-container, .login-qrcode, [class*="qrcode"]',
+    qrCodeContainer: '.qrcode-container, .login-qrcode',
     /** 支付宝二维码精确选择器 */
     alipayQRCode: '#alipay-qrcode',
     /** 登录成功后的用户信息选择器 */
     userInfo: '.user-info, .username, [class*="user-name"], .login-user',
+    /** 登录容器选择器 */
+    loginContainer: 'iframe#contentIframe, .login-box, .login-content, .login-panel, .login-container, .login-dialog, .qrcode-container, .login-qrcode',
     /** 登录按钮选择器 */
-    loginButton: '.login-btn, [class*="login"], button:has-text("登录")',
+    loginButton: '.login-btn, button.login-btn, a.login-btn, button:has-text("登录"), a:has-text("登录"), button:has-text("扫码登录"), a:has-text("扫码登录")',
     /** 支付宝登录图标选择器（点击后显示二维码） */
-    alipayIcon: '.login-type-item.alipay, img[alt*="支付宝"], img[src*="alipay"], img[src*="zhifubao"], .alipay-icon, .alipay-login, [class*="alipay"], [title*="支付宝"], a:has(img[alt*="支付宝"])',
+    alipayIcon: '.login-type-item.alipay, img[alt*="支付宝"], img[src*="alipay"], img[src*="zhifubao"], .alipay-icon, .alipay-login, [title*="支付宝"], a:has(img[alt*="支付宝"])',
     /** 支付宝二维码iframe选择器（二维码可能在iframe中） */
     alipayQRCodeIframe: 'iframe[src*="alipay"], iframe[id*="alipay"]',
 };
@@ -339,7 +341,7 @@ export class AuthManager {
     /**
      * 检查指定页面是否已登录
      */
-    private async isLoggedInOnPage(page?: Page): Promise<boolean> {
+    async isLoggedInOnPage(page?: Page): Promise<boolean> {
         const targetPage = page ?? this.page;
         if (!targetPage) {
             return false;
@@ -347,22 +349,17 @@ export class AuthManager {
 
         try {
             const url = targetPage.url();
+            if (!url || url === 'about:blank') {
+                this.logger.log('[DEBUG] isLoggedInOnPage: 页面为空白页，暂不判定为已登录');
+                return false;
+            }
+
             if (this.isLoginPageUrl(url)) {
                 this.logger.log(`[DEBUG] isLoggedInOnPage: URL包含登录页特征，判定为未登录: ${url}`);
                 return false;
             }
 
             const frame = await this.getLoginFrame(targetPage);
-
-            const qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
-                || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
-            if (qrCodeElement) {
-                const isVisible = await qrCodeElement.isVisible().catch(() => false);
-                if (isVisible) {
-                    this.logger.log('[DEBUG] isLoggedInOnPage: 检测到二维码元素，判定为未登录');
-                    return false;
-                }
-            }
 
             const userInfoElement = await targetPage.$(QR_CODE_SELECTORS.userInfo)
                 || await frame.$(QR_CODE_SELECTORS.userInfo);
@@ -374,21 +371,122 @@ export class AuthManager {
                 }
             }
 
-            const alipayIcon = await frame.$('img[alt*="支付宝"], img[src*="alipay"]');
-            if (alipayIcon) {
-                const isVisible = await alipayIcon.isVisible().catch(() => false);
-                if (isVisible) {
-                    this.logger.log('[DEBUG] isLoggedInOnPage: 检测到支付宝登录图标，判定为未登录');
-                    return false;
-                }
+            const qrCodeElement = await frame.$(QR_CODE_SELECTORS.qrCodeImage)
+                || await frame.$(QR_CODE_SELECTORS.qrCodeContainer);
+            const hasVisibleQrCode = qrCodeElement
+                ? await qrCodeElement.isVisible().catch(() => false)
+                : false;
+
+            const loginContainerElement = await targetPage.$(QR_CODE_SELECTORS.loginContainer)
+                || await frame.$(QR_CODE_SELECTORS.loginContainer);
+            const hasVisibleLoginContainer = loginContainerElement
+                ? await loginContainerElement.isVisible().catch(() => false)
+                : false;
+
+            const loginButtonElement = await targetPage.$(QR_CODE_SELECTORS.loginButton)
+                || await frame.$(QR_CODE_SELECTORS.loginButton);
+            const hasVisibleLoginButton = loginButtonElement
+                ? await loginButtonElement.isVisible().catch(() => false)
+                : false;
+
+            const alipayIconElement = await targetPage.$(QR_CODE_SELECTORS.alipayIcon)
+                || await frame.$(QR_CODE_SELECTORS.alipayIcon);
+            const hasVisibleAlipayIcon = alipayIconElement
+                ? await alipayIconElement.isVisible().catch(() => false)
+                : false;
+
+            if (hasVisibleQrCode) {
+                this.logger.log('[DEBUG] isLoggedInOnPage: 检测到二维码元素，判定为未登录');
+                return false;
             }
 
-            this.logger.log('[DEBUG] isLoggedInOnPage: 未检测到明确的登录状态标志，默认判定为未登录');
-            return false;
+            if (hasVisibleLoginContainer && (hasVisibleLoginButton || hasVisibleAlipayIcon)) {
+                this.logger.log(
+                    `[DEBUG] isLoggedInOnPage: 检测到登录容器与入口 container=${hasVisibleLoginContainer}, button=${hasVisibleLoginButton}, alipay=${hasVisibleAlipayIcon}，判定为未登录`,
+                );
+                return false;
+            }
+
+            this.logger.log('[DEBUG] isLoggedInOnPage: 未检测到登录入口，当前页面视为已登录');
+            return true;
         } catch (error) {
             this.logger.log(`[DEBUG] isLoggedInOnPage: 检查过程出错: ${error}`);
             return false;
         }
+    }
+
+    /**
+     * 将本地保存的Session同步到当前浏览器上下文
+     */
+    private async syncSavedSessionToContext(): Promise<boolean> {
+        const cookies = await this.sessionStore.getCookies();
+        if (cookies.length === 0) {
+            this.logger.log('[DEBUG] syncSavedSessionToContext: session文件中没有cookies');
+            return false;
+        }
+
+        const hasKeySessionCookie = cookies.some(c => c.name === 'SESSION' || c.name === 'HOLDONKEY');
+        if (!hasKeySessionCookie) {
+            this.logger.log('[DEBUG] syncSavedSessionToContext: session文件缺少关键cookie');
+            return false;
+        }
+
+        try {
+            const context = await this.getContext();
+            const playwrightCookies = convertToPlaywrightCookies(cookies);
+            await context.addCookies(playwrightCookies);
+            this.logger.log(`[DEBUG] syncSavedSessionToContext: 已同步 ${playwrightCookies.length} 个cookies到浏览器上下文`);
+            return true;
+        } catch (error) {
+            this.logger.log(`[DEBUG] syncSavedSessionToContext: 同步失败: ${error}`);
+            return false;
+        }
+    }
+
+    /**
+     * 尝试恢复业务页登录态
+     */
+    async recoverPageLogin(page: Page, targetUrl?: string): Promise<boolean> {
+        if (await this.isLoggedInOnPage(page)) {
+            this.logger.log('[DEBUG] recoverPageLogin: 页面已处于登录态');
+            return true;
+        }
+
+        const synced = await this.syncSavedSessionToContext();
+        if (!synced) {
+            this.logger.log('[DEBUG] recoverPageLogin: 无法从本地session恢复浏览器上下文');
+            return false;
+        }
+
+        let currentUrl = '';
+        try {
+            currentUrl = page.url();
+        } catch (error) {
+            this.logger.log(`[DEBUG] recoverPageLogin: 读取当前页面URL失败: ${error}`);
+        }
+
+        const reloadUrl = targetUrl
+            ?? (!currentUrl || currentUrl === 'about:blank' || this.isLoginPageUrl(currentUrl)
+                ? this.config.wenshuUrl
+                : currentUrl);
+
+        try {
+            await page.goto(reloadUrl, { waitUntil: 'domcontentloaded' });
+            await page.waitForLoadState('networkidle', { timeout: this.config.pageTimeout }).catch(() => { });
+        } catch (error) {
+            this.logger.log(`[DEBUG] recoverPageLogin: 重新打开业务页失败: ${error}`);
+        }
+
+        const isLoggedIn = await this.isLoggedInOnPage(page);
+        this.logger.log(`[DEBUG] recoverPageLogin: 页面恢复后登录态=${isLoggedIn}`);
+
+        if (isLoggedIn) {
+            await this.saveCurrentSession().catch((error) => {
+                this.logger.log(`[DEBUG] recoverPageLogin: 保存恢复后的session失败: ${error}`);
+            });
+        }
+
+        return isLoggedIn;
     }
 
     /**

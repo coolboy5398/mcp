@@ -135,6 +135,42 @@ export class PageOperator {
     }
 
     /**
+     * 判断当前页面是否已经呈现搜索页特征，避免误判为登录页
+     */
+    private async detectSearchSurface(): Promise<{
+        hasSearchInput: boolean;
+        hasSearchButton: boolean;
+        hasResultList: boolean;
+        hasPagination: boolean;
+        hasTotalCount: boolean;
+        hasAdvancedSearch: boolean;
+        hasFilterTree: boolean;
+    }> {
+        const hasSearchInput = await this.page.getByPlaceholder(PAGE_SELECTORS.searchInputPlaceholder).first().isVisible().catch(() => false)
+            || await this.page.locator(PAGE_SELECTORS.searchInputFallback).first().isVisible().catch(() => false)
+            || await this.page.locator(PAGE_SELECTORS.searchInputGeneric).first().isVisible().catch(() => false);
+
+        const hasSearchButton = await this.page.locator('#searchBtn').first().isVisible().catch(() => false)
+            || await this.page.locator(PAGE_SELECTORS.searchButtonFallback).first().isVisible().catch(() => false);
+
+        const hasResultList = await this.page.locator(PAGE_SELECTORS.resultList).first().isVisible().catch(() => false);
+        const hasPagination = await this.page.locator(PAGE_SELECTORS.pagination).first().isVisible().catch(() => false);
+        const hasTotalCount = await this.page.locator(PAGE_SELECTORS.totalCount).first().isVisible().catch(() => false);
+        const hasAdvancedSearch = await this.page.locator('.advenced-search, .advencedWrapper, #s2, #searchBtn').first().isVisible().catch(() => false);
+        const hasFilterTree = await this.page.locator('.jstree-anchor').first().isVisible().catch(() => false);
+
+        return {
+            hasSearchInput,
+            hasSearchButton,
+            hasResultList,
+            hasPagination,
+            hasTotalCount,
+            hasAdvancedSearch,
+            hasFilterTree,
+        };
+    }
+
+    /**
      * 判断当前页面是否存在明显的登录入口或二维码
      */
     private async detectLoginSurface(): Promise<{
@@ -171,6 +207,9 @@ export class PageOperator {
                 return false;
             }
 
+            const searchSurface = await this.detectSearchSurface();
+            const hasSearchPageSurface = Object.values(searchSurface).some(Boolean);
+
             const {
                 hasVisibleLoginContainer,
                 hasVisibleQRCode,
@@ -178,8 +217,19 @@ export class PageOperator {
                 hasVisibleAlipayEntry,
             } = await this.detectLoginSurface();
 
+            console.error(
+                `[DEBUG] checkLoginRequired: searchSurface input=${searchSurface.hasSearchInput}, button=${searchSurface.hasSearchButton}, result=${searchSurface.hasResultList}, pagination=${searchSurface.hasPagination}, total=${searchSurface.hasTotalCount}, advanced=${searchSurface.hasAdvancedSearch}, tree=${searchSurface.hasFilterTree}`,
+            );
+            console.error(
+                `[DEBUG] checkLoginRequired: loginSurface container=${hasVisibleLoginContainer}, qrcode=${hasVisibleQRCode}, button=${hasVisibleLoginButton}, alipay=${hasVisibleAlipayEntry}`,
+            );
+
             if (hasVisibleQRCode) {
                 return true;
+            }
+
+            if (hasSearchPageSurface) {
+                return false;
             }
 
             if (hasVisibleLoginContainer && (hasVisibleLoginButton || hasVisibleAlipayEntry)) {
@@ -710,7 +760,7 @@ export class PageOperator {
         const currentUrl = this.page.url();
         console.error(`[DEBUG] waitForSearchResults: 当前URL = ${currentUrl}`);
 
-        if (this.isLoginPageUrl(currentUrl)) {
+        if (this.isLoginPageUrl(currentUrl) || await this.checkLoginRequired()) {
             throw new AuthRequiredError('搜索需要登录，请先调用 login_qrcode 获取二维码并扫码登录');
         }
 
