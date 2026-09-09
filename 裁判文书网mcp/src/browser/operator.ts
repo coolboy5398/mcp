@@ -24,6 +24,8 @@ import {
     parseSearchResults as parseSearchResultsFromPage,
     parseDocumentDetail as parseDocumentDetailFromPage,
 } from './parsers.js';
+import { debugLog } from '../utils/debug.js';
+import { sanitizeErrorMessage } from '../utils/sanitize.js';
 
 /**
  * 搜索筛选参数接口
@@ -217,10 +219,10 @@ export class PageOperator {
                 hasVisibleAlipayEntry,
             } = await this.detectLoginSurface();
 
-            console.error(
+            debugLog(
                 `[DEBUG] checkLoginRequired: searchSurface input=${searchSurface.hasSearchInput}, button=${searchSurface.hasSearchButton}, result=${searchSurface.hasResultList}, pagination=${searchSurface.hasPagination}, total=${searchSurface.hasTotalCount}, advanced=${searchSurface.hasAdvancedSearch}, tree=${searchSurface.hasFilterTree}`,
             );
-            console.error(
+            debugLog(
                 `[DEBUG] checkLoginRequired: loginSurface container=${hasVisibleLoginContainer}, qrcode=${hasVisibleQRCode}, button=${hasVisibleLoginButton}, alipay=${hasVisibleAlipayEntry}`,
             );
 
@@ -259,11 +261,11 @@ export class PageOperator {
     async searchDocuments(params: SearchParams): Promise<SearchResponse> {
         const { keyword, filters, page = 1, pageSize = 20 } = params;
 
-        console.error(`[DEBUG] searchDocuments: 开始搜索 keyword="${keyword}", page=${page}, pageSize=${pageSize}`);
-        console.error('[DEBUG] searchDocuments: 检查页面有效性');
+        debugLog(`[DEBUG] searchDocuments: 开始搜索 keyword="${keyword}", page=${page}, pageSize=${pageSize}`);
+        debugLog('[DEBUG] searchDocuments: 检查页面有效性');
         await this.ensurePageValid();
 
-        console.error(`[DEBUG] searchDocuments: 导航到 ${this.config.searchUrl}`);
+        debugLog(`[DEBUG] searchDocuments: 导航到 ${this.config.searchUrl}`);
         try {
             await this.page.goto(this.config.searchUrl, { waitUntil: 'domcontentloaded' });
         } catch (error) {
@@ -280,72 +282,77 @@ export class PageOperator {
             throw error;
         }
         await this.waitForPageLoad();
-        console.error('[DEBUG] searchDocuments: 页面加载完成');
+        debugLog('[DEBUG] searchDocuments: 页面加载完成');
 
         if (await this.checkLoginRequired()) {
-            console.error('[DEBUG] searchDocuments: 需要登录');
+            debugLog('[DEBUG] searchDocuments: 需要登录');
             throw new AuthRequiredError('需要登录才能搜索文书');
         }
-        console.error('[DEBUG] searchDocuments: 已登录，继续搜索');
+        debugLog('[DEBUG] searchDocuments: 已登录，继续搜索');
 
-        console.error('[DEBUG] searchDocuments: 输入关键词');
+        debugLog('[DEBUG] searchDocuments: 输入关键词');
         await this.inputSearchKeyword(keyword);
         await this.page.keyboard.press('Escape');
 
         if (filters?.courtName) {
-            console.error('[DEBUG] searchDocuments: 打开高级检索面板');
+            debugLog('[DEBUG] searchDocuments: 打开高级检索面板');
             await this.openAdvancedSearch();
 
-            console.error(`[DEBUG] searchDocuments: 输入法院名称 "${filters.courtName}"`);
+            debugLog(`[DEBUG] searchDocuments: 输入法院名称 "${filters.courtName}"`);
             await this.inputCourtName(filters.courtName);
         }
 
         if (filters) {
-            console.error('[DEBUG] searchDocuments: 应用筛选条件');
+            debugLog('[DEBUG] searchDocuments: 应用筛选条件');
             await this.applyFilters(filters);
         }
 
         if (filters?.startDate || filters?.endDate) {
-            console.error('[DEBUG] searchDocuments: 应用日期范围筛选（高级检索）');
+            debugLog('[DEBUG] searchDocuments: 应用日期范围筛选（高级检索）');
             await this.applyDateRangeFilter(filters.startDate, filters.endDate);
         }
 
-        console.error('[DEBUG] searchDocuments: 点击搜索按钮');
+        debugLog('[DEBUG] searchDocuments: 点击搜索按钮');
         await this.clickSearchButton();
 
-        console.error('[DEBUG] searchDocuments: 等待搜索结果');
+        debugLog('[DEBUG] searchDocuments: 等待搜索结果');
         await this.waitForSearchResults();
 
         if (filters?.province) {
-            console.error(`[DEBUG] searchDocuments: 应用省份筛选 "${filters.province}"`);
+            debugLog(`[DEBUG] searchDocuments: 应用省份筛选 "${filters.province}"`);
             await this.applyProvinceFilter(filters.province);
-            console.error('[DEBUG] searchDocuments: 等待省份筛选结果刷新');
+            debugLog('[DEBUG] searchDocuments: 等待省份筛选结果刷新');
             await this.waitForSearchResults();
         }
 
         if (filters?.judgmentYear && !filters?.startDate && !filters?.endDate) {
-            console.error(`[DEBUG] searchDocuments: 应用裁判年份筛选 "${filters.judgmentYear}"`);
+            debugLog(`[DEBUG] searchDocuments: 应用裁判年份筛选 "${filters.judgmentYear}"`);
             await this.applyJudgmentYearFilter(filters.judgmentYear);
-            console.error('[DEBUG] searchDocuments: 等待年份筛选结果刷新');
+            debugLog('[DEBUG] searchDocuments: 等待年份筛选结果刷新');
             await this.waitForSearchResults();
         }
 
+        const effectivePageSize = await this.applyPageSize(pageSize);
+
         if (page > 1) {
-            console.error(`[DEBUG] searchDocuments: 翻到第 ${page} 页`);
+            debugLog(`[DEBUG] searchDocuments: 翻到第 ${page} 页`);
             await this.goToPage(page);
         }
 
-        console.error('[DEBUG] searchDocuments: 解析搜索结果');
+        debugLog('[DEBUG] searchDocuments: 解析搜索结果');
         const documents = await this.parseSearchResults();
         const total = await this.getTotalCount();
 
-        console.error(`[DEBUG] searchDocuments: 完成！total=${total}, documents.length=${documents.length}`);
+        const limitedDocuments = documents.length > effectivePageSize
+            ? documents.slice(0, effectivePageSize)
+            : documents;
+        debugLog(`[DEBUG] searchDocuments: 完成！total=${total}, documents.length=${limitedDocuments.length}, pageSize=${effectivePageSize}`);
 
         return {
             total,
             page,
-            pageSize,
-            documents: documents.slice(0, pageSize),
+            pageSize: effectivePageSize,
+            documents: limitedDocuments,
         };
     }
 
@@ -493,6 +500,177 @@ export class PageOperator {
         }
     }
 
+    private failFilter(filterName: string, reason: string): never {
+        throw new ServiceUnavailableError(`筛选条件"${filterName}"未能生效: ${reason}`);
+    }
+
+    private failFilterFromError(filterName: string, action: string, error: unknown): never {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.failFilter(filterName, `${action}失败: ${sanitizeErrorMessage(detail)}`);
+    }
+
+    private async verifyAdvancedDropdownSelection(
+        inputSelector: string,
+        optionSelector: string,
+        targetVal: string,
+        filterName: string,
+    ): Promise<void> {
+        const input = await this.page.$(inputSelector);
+        if (!input) {
+            this.failFilter(filterName, `未找到选择框 ${inputSelector}`);
+        }
+
+        const value = await input.inputValue().catch(() => '');
+        const text = (await input.textContent())?.trim() ?? '';
+        const title = await input.getAttribute('title') ?? '';
+        const combined = `${value}|${text}|${title}`;
+
+        if (combined.includes(targetVal)) {
+            return;
+        }
+
+        const option = this.page.locator(optionSelector).first();
+        if (await option.count() === 0) {
+            this.failFilter(filterName, `选项 val=${targetVal} 未能选中`);
+        }
+
+        const className = await option.getAttribute('class') ?? '';
+        const optionSelected = /(?:^|\s)(?:selected|active|cur)(?:\s|$)/i.test(className);
+        if (!optionSelected) {
+            this.failFilter(filterName, `选项 val=${targetVal} 未能选中`);
+        }
+    }
+
+    private async verifyDateInput(selector: string, expected: string, filterName: string): Promise<void> {
+        const actual = await this.page.locator(selector).inputValue();
+        if (actual !== expected) {
+            this.failFilter(
+                filterName,
+                `日期输入框 ${selector} 回读值 "${actual}" 与期望 "${expected}" 不符`,
+            );
+        }
+    }
+
+    private resolvePageSize(requested: number): number {
+        const supported = [5, 10, 15, 20, 50, 100];
+        if (supported.includes(requested)) {
+            return requested;
+        }
+        return supported.reduce((closest, size) =>
+            Math.abs(size - requested) < Math.abs(closest - requested) ? size : closest,
+        );
+    }
+
+    private async getCurrentPageSize(): Promise<number | null> {
+        try {
+            const selectors = PAGE_SELECTORS.pageSize.split(',').map((s) => s.trim());
+            for (const selector of selectors) {
+                const element = await this.page.$(selector);
+                if (!element) {
+                    continue;
+                }
+
+                const dataPageSize = await element.getAttribute('data-pagesize');
+                if (dataPageSize) {
+                    const parsed = parseInt(dataPageSize, 10);
+                    if (!Number.isNaN(parsed)) {
+                        return parsed;
+                    }
+                }
+
+                const text = await element.textContent();
+                const match = text?.match(/(\d+)/);
+                if (match?.[1]) {
+                    return parseInt(match[1], 10);
+                }
+            }
+
+            const select = await this.page.$(PAGE_SELECTORS.pageSizeSelect);
+            if (select) {
+                const value = await select.inputValue();
+                const parsed = parseInt(value, 10);
+                if (!Number.isNaN(parsed)) {
+                    return parsed;
+                }
+            }
+        } catch {
+            // 读取失败时返回 null
+        }
+        return null;
+    }
+
+    private async trySetPageSizeOnSite(targetSize: number): Promise<boolean> {
+        try {
+            const select = await this.page.$(PAGE_SELECTORS.pageSizeSelect);
+            if (select) {
+                await select.selectOption(String(targetSize)).catch(async () => {
+                    await select.selectOption({ label: String(targetSize) });
+                });
+                await this.waitForSearchResults();
+                return true;
+            }
+
+            const trigger = await this.page.$(PAGE_SELECTORS.pageSize);
+            if (trigger) {
+                await trigger.click();
+                await this.page.waitForTimeout(300);
+
+                const optionSelectors = [
+                    `[data-pagesize="${targetSize}"]`,
+                    `option[value="${targetSize}"]`,
+                    `li:has-text("${targetSize}")`,
+                    `a:has-text("${targetSize}")`,
+                ];
+
+                for (const selector of optionSelectors) {
+                    const option = await this.page.$(selector);
+                    if (option && await option.isVisible()) {
+                        await option.click();
+                        await this.waitForSearchResults();
+                        return true;
+                    }
+                }
+            }
+
+            const directOption = await this.page.$(`[data-pagesize="${targetSize}"]`);
+            if (directOption) {
+                await directOption.click();
+                await this.waitForSearchResults();
+                return true;
+            }
+        } catch (error) {
+            debugLog(`[DEBUG] trySetPageSizeOnSite: 设置失败 ${error}`);
+        }
+
+        return false;
+    }
+
+    private async applyPageSize(requestedSize: number): Promise<number> {
+        const targetSize = this.resolvePageSize(requestedSize);
+        const currentSize = await this.getCurrentPageSize();
+
+        if (currentSize === targetSize) {
+            debugLog(`[DEBUG] applyPageSize: 当前每页条数已是 ${targetSize}`);
+            return targetSize;
+        }
+
+        const setSuccessfully = await this.trySetPageSizeOnSite(targetSize);
+        if (setSuccessfully) {
+            const verifiedSize = await this.getCurrentPageSize();
+            if (verifiedSize === targetSize) {
+                debugLog(`[DEBUG] applyPageSize: 已设置每页条数为 ${targetSize}`);
+                return targetSize;
+            }
+        }
+
+        if (requestedSize <= 20) {
+            debugLog(`[DEBUG] applyPageSize: 网站分页控件不可用，降级为 slice(${requestedSize})`);
+            return requestedSize;
+        }
+
+        throw new ServiceUnavailableError(`无法设置每页数量为 ${targetSize}，请尝试更小的 pageSize`);
+    }
+
     /**
      * 应用案件类型筛选
      */
@@ -505,38 +683,43 @@ export class PageOperator {
             zhixing: '10',
         };
 
-        try {
-            await this.openAdvancedSearch();
+        await this.openAdvancedSearch('案件类型');
 
-            const dropdownTrigger = await this.page.$('#s8');
-            if (dropdownTrigger) {
-                console.error('[DEBUG] applyCaseTypeFilter: 点击案件类型下拉框 #s8');
-                await dropdownTrigger.click();
-                await this.page.waitForTimeout(500);
-            } else {
-                console.error('[DEBUG] applyCaseTypeFilter: 未找到案件类型下拉框 #s8');
-                return;
-            }
-
-            const targetVal = CASE_TYPE_MAP[caseType] || caseType;
-            const selector = `#gjjs_ajlx li[data-val="${targetVal}"]`;
-            try {
-                await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
-                const option = await this.page.$(selector);
-
-                if (option) {
-                    console.error(`[DEBUG] applyCaseTypeFilter: 点击选项 val=${targetVal}`);
-                    await option.click();
-                    await this.page.waitForTimeout(300);
-                } else {
-                    console.error(`[DEBUG] applyCaseTypeFilter: 未找到案件类型选项 "${caseType}" (val=${targetVal})`);
-                }
-            } catch (error) {
-                console.error(`[DEBUG] applyCaseTypeFilter: 等待选项超时或失败 - ${error}`);
-            }
-        } catch (error) {
-            console.error(`[DEBUG] applyCaseTypeFilter: 筛选出错 - ${error}`);
+        const dropdownTrigger = await this.page.$('#s8');
+        if (!dropdownTrigger) {
+            this.failFilter('案件类型', '未找到案件类型下拉框 #s8');
         }
+
+        debugLog('[DEBUG] applyCaseTypeFilter: 点击案件类型下拉框 #s8');
+        try {
+            await dropdownTrigger.click();
+        } catch (error) {
+            this.failFilterFromError('案件类型', '点击下拉框', error);
+        }
+        await this.page.waitForTimeout(500);
+
+        const targetVal = CASE_TYPE_MAP[caseType] || caseType;
+        const selector = `#gjjs_ajlx li[data-val="${targetVal}"]`;
+
+        try {
+            await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
+        } catch {
+            this.failFilter('案件类型', `未找到选项 "${caseType}" (val=${targetVal})`);
+        }
+
+        const option = await this.page.$(selector);
+        if (!option) {
+            this.failFilter('案件类型', `未找到选项 "${caseType}" (val=${targetVal})`);
+        }
+
+        debugLog(`[DEBUG] applyCaseTypeFilter: 点击选项 val=${targetVal}`);
+        try {
+            await option.click();
+        } catch (error) {
+            this.failFilterFromError('案件类型', '点击选项', error);
+        }
+        await this.page.waitForTimeout(300);
+        await this.verifyAdvancedDropdownSelection('#s8', selector, targetVal, '案件类型');
     }
 
     /**
@@ -550,63 +733,68 @@ export class PageOperator {
             jiceng: '4',
         };
 
-        try {
-            await this.openAdvancedSearch();
+        await this.openAdvancedSearch('法院级别');
 
-            const dropdownTrigger = await this.page.$('#s4');
-            if (dropdownTrigger) {
-                console.error('[DEBUG] applyCourtLevelFilter: 点击法院层级下拉框 #s4');
-                await dropdownTrigger.click();
-                await this.page.waitForTimeout(500);
-            } else {
-                console.error('[DEBUG] applyCourtLevelFilter: 未找到法院层级下拉框 #s4');
-                return;
-            }
-
-            const targetVal = COURT_LEVEL_MAP[courtLevel] || courtLevel;
-            const selector = `#gjjs_fycj li[data-val="${targetVal}"]`;
-            try {
-                await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
-                const option = await this.page.$(selector);
-
-                if (option) {
-                    console.error(`[DEBUG] applyCourtLevelFilter: 点击选项 val=${targetVal}`);
-                    await option.click();
-                    await this.page.waitForTimeout(300);
-                } else {
-                    console.error(`[DEBUG] applyCourtLevelFilter: 未找到法院层级选项 "${courtLevel}" (val=${targetVal})`);
-                }
-            } catch (error) {
-                console.error(`[DEBUG] applyCourtLevelFilter: 等待选项超时或失败 - ${error}`);
-            }
-        } catch (error) {
-            console.error(`[DEBUG] applyCourtLevelFilter: 筛选出错 - ${error}`);
+        const dropdownTrigger = await this.page.$('#s4');
+        if (!dropdownTrigger) {
+            this.failFilter('法院级别', '未找到法院层级下拉框 #s4');
         }
+
+        debugLog('[DEBUG] applyCourtLevelFilter: 点击法院层级下拉框 #s4');
+        try {
+            await dropdownTrigger.click();
+        } catch (error) {
+            this.failFilterFromError('法院级别', '点击下拉框', error);
+        }
+        await this.page.waitForTimeout(500);
+
+        const targetVal = COURT_LEVEL_MAP[courtLevel] || courtLevel;
+        const selector = `#gjjs_fycj li[data-val="${targetVal}"]`;
+
+        try {
+            await this.page.waitForSelector(selector, { state: 'visible', timeout: 2000 });
+        } catch {
+            this.failFilter('法院级别', `未找到选项 "${courtLevel}" (val=${targetVal})`);
+        }
+
+        const option = await this.page.$(selector);
+        if (!option) {
+            this.failFilter('法院级别', `未找到选项 "${courtLevel}" (val=${targetVal})`);
+        }
+
+        debugLog(`[DEBUG] applyCourtLevelFilter: 点击选项 val=${targetVal}`);
+        try {
+            await option.click();
+        } catch (error) {
+            this.failFilterFromError('法院级别', '点击选项', error);
+        }
+        await this.page.waitForTimeout(300);
+        await this.verifyAdvancedDropdownSelection('#s4', selector, targetVal, '法院级别');
     }
 
     /**
      * 打开高级检索面板
      */
-    private async openAdvancedSearch(): Promise<void> {
-        try {
-            const s2Input = await this.page.$('#s2');
-            if (s2Input && await s2Input.isVisible()) {
-                console.error('[DEBUG] openAdvancedSearch: 高级检索面板已展开');
-                return;
-            }
-
-            const advancedBtn = this.page.locator('.advenced-search').first();
-
-            if (await advancedBtn.count() > 0 && await advancedBtn.isVisible()) {
-                console.error('[DEBUG] openAdvancedSearch: 点击高级检索按钮');
-                await advancedBtn.click();
-                await this.page.waitForTimeout(1000);
-            } else {
-                console.error('[DEBUG] openAdvancedSearch: 未找到高级检索按钮 (.advenced-search)');
-            }
-        } catch (error) {
-            console.error(`[DEBUG] openAdvancedSearch: 打开面板失败 - ${error}`);
+    private async openAdvancedSearch(filterName = '高级检索'): Promise<void> {
+        const s2Input = await this.page.$('#s2');
+        if (s2Input && await s2Input.isVisible()) {
+            debugLog('[DEBUG] openAdvancedSearch: 高级检索面板已展开');
+            return;
         }
+
+        const advancedBtn = this.page.locator('.advenced-search').first();
+        if (await advancedBtn.count() > 0 && await advancedBtn.isVisible()) {
+            debugLog('[DEBUG] openAdvancedSearch: 点击高级检索按钮');
+            try {
+                await advancedBtn.click();
+            } catch (error) {
+                this.failFilterFromError(filterName, '点击高级检索按钮', error);
+            }
+            await this.page.waitForTimeout(1000);
+            return;
+        }
+
+        this.failFilter(filterName, '未找到高级检索按钮 (.advenced-search)');
     }
 
     /**
@@ -614,81 +802,94 @@ export class PageOperator {
      */
     private async inputCourtName(courtName: string): Promise<void> {
         const selector = '#s2';
+
         try {
             await this.page.waitForSelector(selector, { state: 'visible', timeout: 3000 });
             await this.page.fill(selector, courtName);
             await this.page.keyboard.press('Tab');
+            return;
         } catch {
-            console.error(`[DEBUG] inputCourtName: 无法找到法院输入框 ${selector}`);
-            const inputs = await this.page.$$('input[type="text"]');
-            for (const input of inputs) {
-                const placeholder = await input.getAttribute('placeholder');
-                if (placeholder && placeholder.includes('法院')) {
-                    await input.fill(courtName);
-                    break;
-                }
+            debugLog(`[DEBUG] inputCourtName: 无法找到法院输入框 ${selector}`);
+        }
+
+        const inputs = await this.page.$$('input[type="text"]');
+        for (const input of inputs) {
+            const placeholder = await input.getAttribute('placeholder');
+            if (placeholder && placeholder.includes('法院')) {
+                await input.fill(courtName);
+                return;
             }
         }
+
+        this.failFilter('审理法院', `无法找到法院输入框以填写 "${courtName}"`);
     }
 
     /**
      * 应用省份筛选 (后置筛选)
      */
     private async applyProvinceFilter(province: string): Promise<void> {
-        console.error(`[DEBUG] applyProvinceFilter: 尝试筛选省份 "${province}"`);
-        try {
-            const provinceNode = this.page.locator('.jstree-anchor').filter({ hasText: new RegExp(`^${province}$`) }).first();
+        debugLog(`[DEBUG] applyProvinceFilter: 尝试筛选省份 "${province}"`);
 
-            if (await provinceNode.count() > 0) {
+        const provinceNode = this.page.locator('.jstree-anchor').filter({ hasText: new RegExp(`^${province}$`) }).first();
+        if (await provinceNode.count() > 0) {
+            try {
                 await provinceNode.scrollIntoViewIfNeeded();
                 await provinceNode.click();
-                await this.waitForFilterTag(`法院省份：${province}`);
-                return;
+            } catch (error) {
+                this.failFilterFromError('法院省份', '点击省份节点', error);
             }
+            await this.waitForFilterTag(`法院省份：${province}`, '法院省份');
+            return;
+        }
 
-            const roughNode = this.page.locator(`.jstree-anchor:has-text("${province}")`).first();
-            if (await roughNode.count() > 0) {
+        const roughNode = this.page.locator(`.jstree-anchor:has-text("${province}")`).first();
+        if (await roughNode.count() > 0) {
+            try {
                 await roughNode.scrollIntoViewIfNeeded();
                 await roughNode.click();
-                await this.waitForFilterTag(`法院省份：${province}`);
-                return;
+            } catch (error) {
+                this.failFilterFromError('法院省份', '点击省份节点', error);
             }
-
-            console.error(`[DEBUG] applyProvinceFilter: 未找到省份节点 "${province}"`);
-        } catch (error) {
-            console.error(`[DEBUG] applyProvinceFilter: 筛选出错 - ${error}`);
+            await this.waitForFilterTag(`法院省份：${province}`, '法院省份');
+            return;
         }
+
+        this.failFilter('法院省份', `未找到省份节点 "${province}"`);
     }
 
     /**
      * 应用裁判年份筛选 (后置筛选)
      */
     private async applyJudgmentYearFilter(year: string): Promise<void> {
-        console.error(`[DEBUG] applyJudgmentYearFilter: 尝试筛选年份 "${year}"`);
-        try {
-            const yearNode = this.page.locator('.jstree-anchor').filter({ hasText: new RegExp(`^${year}\(`) }).first();
+        debugLog(`[DEBUG] applyJudgmentYearFilter: 尝试筛选年份 "${year}"`);
 
-            if (await yearNode.count() > 0) {
-                console.error('[DEBUG] applyJudgmentYearFilter: 找到年份节点，点击中...');
+        const yearNode = this.page.locator('.jstree-anchor').filter({ hasText: new RegExp(`^${year}\(`) }).first();
+        if (await yearNode.count() > 0) {
+            debugLog('[DEBUG] applyJudgmentYearFilter: 找到年份节点，点击中...');
+            try {
                 await yearNode.scrollIntoViewIfNeeded();
                 await yearNode.click();
-                await this.waitForFilterTag(`裁判年份：${year}`);
-                return;
+            } catch (error) {
+                this.failFilterFromError('裁判年份', '点击年份节点', error);
             }
+            await this.waitForFilterTag(`裁判年份：${year}`, '裁判年份');
+            return;
+        }
 
-            const exactNode = this.page.locator(`.jstree-anchor:has-text("${year}")`).first();
-            if (await exactNode.count() > 0) {
-                console.error('[DEBUG] applyJudgmentYearFilter: 使用备选选择器找到年份节点');
+        const exactNode = this.page.locator(`.jstree-anchor:has-text("${year}")`).first();
+        if (await exactNode.count() > 0) {
+            debugLog('[DEBUG] applyJudgmentYearFilter: 使用备选选择器找到年份节点');
+            try {
                 await exactNode.scrollIntoViewIfNeeded();
                 await exactNode.click();
-                await this.waitForFilterTag(`裁判年份：${year}`);
-                return;
+            } catch (error) {
+                this.failFilterFromError('裁判年份', '点击年份节点', error);
             }
-
-            console.error(`[DEBUG] applyJudgmentYearFilter: 未找到年份节点 "${year}"`);
-        } catch (error) {
-            console.error(`[DEBUG] applyJudgmentYearFilter: 筛选出错 - ${error}`);
+            await this.waitForFilterTag(`裁判年份：${year}`, '裁判年份');
+            return;
         }
+
+        this.failFilter('裁判年份', `未找到年份节点 "${year}"`);
     }
 
     /**
@@ -699,51 +900,59 @@ export class PageOperator {
             return;
         }
 
-        console.error(`[DEBUG] applyDateRangeFilter: 应用日期范围 ${startDate || ''} ~ ${endDate || ''}`);
+        debugLog(`[DEBUG] applyDateRangeFilter: 应用日期范围 ${startDate || ''} ~ ${endDate || ''}`);
 
-        try {
-            const wrapper = this.page.locator('.advencedWrapper');
-            if (await wrapper.count() > 0) {
-                await wrapper.evaluate((el) => {
-                    (el as { style: { display: string } }).style.display = 'block';
-                });
-            }
-            await this.page.waitForTimeout(500);
+        const wrapper = this.page.locator('.advencedWrapper');
+        if (await wrapper.count() > 0) {
+            await wrapper.evaluate((el) => {
+                (el as { style: { display: string } }).style.display = 'block';
+            });
+        }
+        await this.page.waitForTimeout(500);
 
-            if (startDate) {
-                const startInput = this.page.locator('#cprqStart');
-                if (await startInput.count() > 0) {
-                    await startInput.fill(startDate);
-                    console.error(`[DEBUG] applyDateRangeFilter: 已设置开始日期 ${startDate}`);
-                }
+        if (startDate) {
+            const startInput = this.page.locator('#cprqStart');
+            if (await startInput.count() === 0) {
+                this.failFilter('裁判日期', `未找到开始日期输入框以设置 ${startDate}`);
             }
+            try {
+                await startInput.fill(startDate);
+            } catch (error) {
+                this.failFilterFromError('裁判日期', '设置开始日期', error);
+            }
+            await this.verifyDateInput('#cprqStart', startDate, '裁判日期');
+            debugLog(`[DEBUG] applyDateRangeFilter: 已设置开始日期 ${startDate}`);
+        }
 
-            if (endDate) {
-                const endInput = this.page.locator('#cprqEnd');
-                if (await endInput.count() > 0) {
-                    await endInput.fill(endDate);
-                    console.error(`[DEBUG] applyDateRangeFilter: 已设置结束日期 ${endDate}`);
-                }
+        if (endDate) {
+            const endInput = this.page.locator('#cprqEnd');
+            if (await endInput.count() === 0) {
+                this.failFilter('裁判日期', `未找到结束日期输入框以设置 ${endDate}`);
             }
-        } catch (error) {
-            console.error(`[DEBUG] applyDateRangeFilter: 设置日期范围出错 - ${error}`);
+            try {
+                await endInput.fill(endDate);
+            } catch (error) {
+                this.failFilterFromError('裁判日期', '设置结束日期', error);
+            }
+            await this.verifyDateInput('#cprqEnd', endDate, '裁判日期');
+            debugLog(`[DEBUG] applyDateRangeFilter: 已设置结束日期 ${endDate}`);
         }
     }
 
     /**
      * 等待筛选标签出现
      */
-    private async waitForFilterTag(tagText: string): Promise<void> {
-        console.error(`[DEBUG] waitForFilterTag: 等待筛选标签 "${tagText}"`);
+    private async waitForFilterTag(tagText: string, filterName: string): Promise<void> {
+        debugLog(`[DEBUG] waitForFilterTag: 等待筛选标签 "${tagText}"`);
         try {
             await this.page.waitForSelector(`:text("${tagText}")`, {
                 timeout: 8000,
                 state: 'visible',
             });
-            console.error(`[DEBUG] waitForFilterTag: 筛选标签 "${tagText}" 已出现`);
+            debugLog(`[DEBUG] waitForFilterTag: 筛选标签 "${tagText}" 已出现`);
             await this.page.waitForTimeout(500);
-        } catch (error) {
-            console.error(`[DEBUG] waitForFilterTag: 等待筛选标签超时 - ${error}`);
+        } catch {
+            this.failFilter(filterName, `筛选标签 "${tagText}" 未出现`);
         }
     }
 
@@ -752,33 +961,33 @@ export class PageOperator {
      */
     private async waitForSearchResults(): Promise<void> {
         await this.page.waitForLoadState('domcontentloaded', { timeout: this.config.loadTimeout });
-        console.error('[DEBUG] waitForSearchResults: domcontentloaded 完成');
+        debugLog('[DEBUG] waitForSearchResults: domcontentloaded 完成');
 
         await this.page.waitForLoadState('networkidle', { timeout: this.config.loadTimeout }).catch(() => { });
-        console.error('[DEBUG] waitForSearchResults: networkidle 完成');
+        debugLog('[DEBUG] waitForSearchResults: networkidle 完成');
 
         const currentUrl = this.page.url();
-        console.error(`[DEBUG] waitForSearchResults: 当前URL = ${currentUrl}`);
+        debugLog(`[DEBUG] waitForSearchResults: 当前URL = ${currentUrl}`);
 
         if (this.isLoginPageUrl(currentUrl) || await this.checkLoginRequired()) {
             throw new AuthRequiredError('搜索需要登录，请先调用 login_qrcode 获取二维码并扫码登录');
         }
 
         try {
-            console.error(`[DEBUG] waitForSearchResults: 等待选择器 "${PAGE_SELECTORS.resultList}"`);
+            debugLog(`[DEBUG] waitForSearchResults: 等待选择器 "${PAGE_SELECTORS.resultList}"`);
             await this.page.waitForSelector(PAGE_SELECTORS.resultList, {
                 timeout: this.config.elementTimeout,
             });
-            console.error('[DEBUG] waitForSearchResults: 找到结果容器');
+            debugLog('[DEBUG] waitForSearchResults: 找到结果容器');
         } catch (error) {
-            console.error(`[DEBUG] waitForSearchResults: 等待结果容器失败 - ${error}`);
+            debugLog(`[DEBUG] waitForSearchResults: 等待结果容器失败 - ${error}`);
             try {
                 await this.page.waitForSelector(':text("共检索到")', {
                     timeout: 3000,
                 });
-                console.error('[DEBUG] waitForSearchResults: 找到总数文本');
+                debugLog('[DEBUG] waitForSearchResults: 找到总数文本');
             } catch {
-                console.error('[DEBUG] waitForSearchResults: 未找到总数文本');
+                debugLog('[DEBUG] waitForSearchResults: 未找到总数文本');
             }
         }
     }
@@ -910,8 +1119,8 @@ export class PageOperator {
         }
 
         if (docId.length < 50) {
-            console.error(`[WARN] validateDocId: docId 长度异常短 (${docId.length} 字符)，可能无效`);
-            console.error('[WARN] validateDocId: 有效的 docId 通常是 Base64 编码的长字符串（80-120字符）');
+            debugLog(`[WARN] validateDocId: docId 长度异常短 (${docId.length} 字符)，可能无效`);
+            debugLog('[WARN] validateDocId: 有效的 docId 通常是 Base64 编码的长字符串（80-120字符）');
         }
     }
 
@@ -919,14 +1128,14 @@ export class PageOperator {
      * 获取文书详情
      */
     async getDocumentDetail(docId: string): Promise<DocumentDetail> {
-        console.error('[DEBUG] getDocumentDetail: 开始获取文书详情');
-        console.error(`[DEBUG] getDocumentDetail: docId = ${docId.substring(0, 50)}...（长度: ${docId.length}）`);
+        debugLog('[DEBUG] getDocumentDetail: 开始获取文书详情');
+        debugLog(`[DEBUG] getDocumentDetail: docId 长度 = ${docId.length}`);
 
         this.validateDocId(docId);
         await this.ensurePageValid();
 
         const detailUrl = `${this.config.baseUrl}/website/wenshu/181107ANFZ0BXSK4/index.html?docId=${encodeURIComponent(docId)}`;
-        console.error(`[DEBUG] getDocumentDetail: 访问URL = ${detailUrl}`);
+        debugLog('[DEBUG] getDocumentDetail: 正在访问文书详情页');
 
         try {
             await this.page.goto(detailUrl, { waitUntil: 'domcontentloaded' });
@@ -947,17 +1156,17 @@ export class PageOperator {
 
         const currentUrl = this.page.url();
         const pageTitle = await this.page.title();
-        console.error('[DEBUG] getDocumentDetail: 页面加载完成');
-        console.error(`[DEBUG] getDocumentDetail: 当前URL = ${currentUrl}`);
-        console.error(`[DEBUG] getDocumentDetail: 页面标题 = ${pageTitle}`);
+        debugLog('[DEBUG] getDocumentDetail: 页面加载完成');
+        debugLog(`[DEBUG] getDocumentDetail: 当前URL = ${currentUrl}`);
+        debugLog(`[DEBUG] getDocumentDetail: 页面标题 = ${pageTitle}`);
 
         if (this.isLoginPageUrl(currentUrl)) {
-            console.error('[DEBUG] getDocumentDetail: 检测到登录页重定向');
+            debugLog('[DEBUG] getDocumentDetail: 检测到登录页重定向');
             throw new AuthRequiredError('获取文书详情需要登录，请先调用 login_qrcode 获取二维码并扫码登录');
         }
 
         const hasVisibleUserInfo = await this.hasLoggedInUserInfo();
-        console.error(`[DEBUG] getDocumentDetail: 页面用户信息可见 = ${hasVisibleUserInfo}`);
+        debugLog(`[DEBUG] getDocumentDetail: 页面用户信息可见 = ${hasVisibleUserInfo}`);
 
         const {
             hasVisibleLoginContainer,
@@ -965,7 +1174,7 @@ export class PageOperator {
             hasVisibleLoginButton,
             hasVisibleAlipayEntry,
         } = await this.detectLoginSurface();
-        console.error(
+        debugLog(
             `[DEBUG] getDocumentDetail: 登录表面特征 container=${hasVisibleLoginContainer}, qrcode=${hasVisibleQRCode}, button=${hasVisibleLoginButton}, alipay=${hasVisibleAlipayEntry}`,
         );
 
@@ -975,12 +1184,12 @@ export class PageOperator {
 
         const hasVisibleDocumentContent = await this.waitForDocumentReady();
         if (!hasVisibleDocumentContent) {
-            console.error('[DEBUG] getDocumentDetail: 文书详情页未就绪，打印页面诊断信息');
+            debugLog('[DEBUG] getDocumentDetail: 文书详情页未就绪，打印页面诊断信息');
             try {
                 const bodyText = await this.page.$eval('body', (el) => el.innerText.substring(0, 500));
-                console.error(`[DEBUG] getDocumentDetail: 页面body内容（前500字符）= ${bodyText}`);
+                debugLog(`[DEBUG] getDocumentDetail: 页面body内容（前500字符）= ${bodyText}`);
             } catch (error) {
-                console.error(`[DEBUG] getDocumentDetail: 无法获取页面body内容: ${error}`);
+                debugLog(`[DEBUG] getDocumentDetail: 无法获取页面body内容: ${error}`);
             }
             throw new NotFoundError(`未找到完整文书内容: ${docId}，请检查文书ID是否正确或当前登录态是否有效`);
         }
@@ -998,7 +1207,7 @@ export class PageOperator {
 
         for (const selector of readySelectors) {
             try {
-                console.error(`[DEBUG] getDocumentDetail: 等待详情页选择器 = ${selector}`);
+                debugLog(`[DEBUG] getDocumentDetail: 等待详情页选择器 = ${selector}`);
                 await this.page.waitForSelector(selector, {
                     timeout: Math.min(this.config.elementTimeout, 5000),
                     state: 'visible',
@@ -1006,7 +1215,7 @@ export class PageOperator {
 
                 const previewText = await this.page.locator(selector).first().innerText().catch(() => '');
                 const normalizedPreview = previewText.replace(/\s+/g, ' ').trim();
-                console.error(`[DEBUG] getDocumentDetail: 详情页选择器命中，selector = ${selector}，preview = ${normalizedPreview.substring(0, 80)}`);
+                debugLog(`[DEBUG] getDocumentDetail: 详情页选择器命中，selector = ${selector}，preview = ${normalizedPreview.substring(0, 80)}`);
 
                 if (normalizedPreview.length >= 20
                     || /判决书|裁定书|调解书|决定书|通知书|人民法院|案号|发布日期/.test(normalizedPreview)) {

@@ -5,7 +5,10 @@ node_modules/
 dist/
 
 # Session data (contains sensitive login info)
-session-data/*.json
+session-data/
+session-data/**
+**/session-data/
+**/session-data/**
 
 # IDE
 .vscode/

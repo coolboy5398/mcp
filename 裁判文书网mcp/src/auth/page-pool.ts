@@ -27,9 +27,14 @@ export interface PagePoolStats {
 /**
  * 页面池管理器
  */
+interface PageWaitEntry {
+    resolve: (page: Page) => void;
+    reject: (error: Error) => void;
+}
+
 export class PagePoolManager {
     private readonly pagePool: PooledPage[] = [];
-    private readonly pageWaitQueue: Array<(page: Page) => void> = [];
+    private readonly pageWaitQueue: PageWaitEntry[] = [];
 
     constructor(
         private readonly contextProvider: () => Promise<BrowserContext>,
@@ -78,8 +83,8 @@ export class PagePoolManager {
         }
 
         this.logger.log(`[DEBUG] acquirePage: 池已满(${this.pagePool.length}/${this.maxConcurrentPages})，等待页面释放...`);
-        return new Promise<Page>((resolve) => {
-            this.pageWaitQueue.push(resolve);
+        return new Promise<Page>((resolve, reject) => {
+            this.pageWaitQueue.push({ resolve, reject });
         });
     }
 
@@ -94,12 +99,12 @@ export class PagePoolManager {
             this.logger.log(`[DEBUG] releasePage: 页面已归还，当前使用中=${this.pagePool.filter(p => p.inUse).length}/${this.pagePool.length}`);
 
             if (this.pageWaitQueue.length > 0) {
-                const resolve = this.pageWaitQueue.shift();
-                if (resolve) {
+                const entry = this.pageWaitQueue.shift();
+                if (entry) {
                     pooledPage.inUse = true;
                     pooledPage.lastUsed = Date.now();
                     this.logger.log('[DEBUG] releasePage: 将页面分配给等待队列中的请求');
-                    resolve(page);
+                    entry.resolve(page);
                 }
             }
             return;
@@ -125,6 +130,13 @@ export class PagePoolManager {
      * 关闭页面池
      */
     async closeAll(): Promise<void> {
+        const closeError = new Error('页面池已关闭，无法获取页面');
+
+        for (const entry of this.pageWaitQueue) {
+            entry.reject(closeError);
+        }
+        this.pageWaitQueue.length = 0;
+
         for (const pooledPage of this.pagePool) {
             try {
                 await pooledPage.page.close();
@@ -133,7 +145,6 @@ export class PagePoolManager {
             }
         }
         this.pagePool.length = 0;
-        this.pageWaitQueue.length = 0;
     }
 }
 

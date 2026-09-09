@@ -31,6 +31,8 @@ export const PAGE_SELECTORS = {
     resultDocIdInput: 'input.ListSelect',
 
     pagination: '.pagination, .page-nav',
+    pageSize: '.page-size, [data-pagesize]',
+    pageSizeSelect: '.page-size select, select.page-size',
     pageNumber: 'a[href="javascript:;"]',
     nextPage: 'a:has-text("下一页")',
     prevPage: 'a:has-text("上一页")',

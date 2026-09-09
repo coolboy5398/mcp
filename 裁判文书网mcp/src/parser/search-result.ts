@@ -125,19 +125,22 @@ export class SearchResultParser {
      */
     async parseResultItem(item: ElementHandle, index: number): Promise<DocumentSummary | null> {
         const 文书ID = await this.extractDocId(item, index);
+        if (!文书ID) {
+            return null;
+        }
+
         const 案件名称 = await this.extractText(item, this.selectors.title);
         const 案号 = await this.extractText(item, this.selectors.caseNo);
         const 法院名称 = await this.extractText(item, this.selectors.court);
         const 裁判日期 = await this.extractText(item, this.selectors.date);
         const 案件类型 = await this.extractText(item, this.selectors.caseType);
 
-        // 如果关键字段都为空，返回null
         if (!案件名称 && !案号) {
             return null;
         }
 
         return {
-            文书ID: 文书ID || this.generateTempId(index),
+            文书ID,
             案件名称: 案件名称 || '未知案件',
             案号: 案号 || '未知案号',
             法院名称: 法院名称 || '未知法院',
@@ -247,13 +250,6 @@ export class SearchResultParser {
 
         // 如果无法解析，返回原始字符串
         return dateStr;
-    }
-
-    /**
-     * 生成临时ID
-     */
-    private generateTempId(index: number): string {
-        return `temp_${Date.now()}_${index}_${Math.random().toString(36).substring(2, 9)}`;
     }
 
     /**
@@ -422,8 +418,13 @@ export function parseSearchResultsFromHtml(html: string): DocumentSummary[] {
     const count = Math.max(docIds.length, titles.length, caseNos.length);
 
     for (let i = 0; i < count; i++) {
+        const docId = docIds[i];
+        if (!docId) {
+            continue;
+        }
+
         results.push({
-            文书ID: docIds[i] || `temp_${i}`,
+            文书ID: docId,
             案件名称: titles[i] || '未知案件',
             案号: caseNos[i] || '未知案号',
             法院名称: courts[i] || '未知法院',

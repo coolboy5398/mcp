@@ -6,6 +6,7 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { sanitizeErrorMessage } from '../utils/sanitize.js';
 
 /**
  * Cookie信息接口
@@ -160,7 +161,8 @@ export class SessionStore {
                 return null;
             }
             // 其他错误（如JSON解析失败）也返回null
-            console.error('加载Session失败:', error);
+            const message = error instanceof Error ? error.message : String(error);
+            console.error('加载Session失败:', sanitizeErrorMessage(message));
             return null;
         }
     }

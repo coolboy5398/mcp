@@ -13,6 +13,7 @@ import {
     NotFoundError,
 } from '../errors/index.js';
 import { PAGE_SELECTORS } from './selectors.js';
+import { debugLog } from '../utils/debug.js';
 
 const DETAIL_INVALID_HINTS = [
     '登录',
@@ -75,9 +76,9 @@ const MIN_VALID_DOCUMENT_TEXT_LENGTH = 120;
 export async function parseSearchResults(page: Page): Promise<DocumentSummary[]> {
     const results: DocumentSummary[] = [];
 
-    console.error(`[DEBUG] parseSearchResults: 使用选择器 "${PAGE_SELECTORS.resultList}"`);
+    debugLog(`[DEBUG] parseSearchResults: 使用选择器 "${PAGE_SELECTORS.resultList}"`);
     const items = await page.$$(PAGE_SELECTORS.resultList);
-    console.error(`[DEBUG] parseSearchResults: 找到 ${items.length} 个结果项`);
+    debugLog(`[DEBUG] parseSearchResults: 找到 ${items.length} 个结果项`);
 
     for (const item of items) {
         const titleElement = await item.$(PAGE_SELECTORS.resultTitle);
@@ -93,11 +94,11 @@ export async function parseSearchResults(page: Page): Promise<DocumentSummary[]>
         const 裁判日期 = (await dateElement?.textContent())?.trim() ?? '';
         const 案件类型 = (await typeElement?.textContent())?.trim() ?? '';
 
-        const getDocId = async (): Promise<string> => {
+        const getDocId = async (): Promise<string | null> => {
             if (docIdInput) {
                 const dataValue = await docIdInput.getAttribute('data-value');
                 if (dataValue) {
-                    console.error(`[DEBUG] parseResultItem: docId from data-value = ${dataValue.substring(0, 30)}...`);
+                    debugLog('[DEBUG] parseResultItem: docId from data-value');
                     return dataValue;
                 }
             }
@@ -108,20 +109,27 @@ export async function parseSearchResults(page: Page): Promise<DocumentSummary[]>
                 if (href) {
                     const docIdMatch = href.match(/docId=([^&]+)/);
                     if (docIdMatch && docIdMatch[1]) {
-                        console.error(`[DEBUG] parseResultItem: docId from href = ${docIdMatch[1].substring(0, 30)}...`);
-                        return docIdMatch[1];
+                        debugLog('[DEBUG] parseResultItem: docId from href');
+                        try {
+                            return decodeURIComponent(docIdMatch[1]);
+                        } catch {
+                            return docIdMatch[1];
+                        }
                     }
                 }
             }
 
-            console.error('[DEBUG] parseResultItem: 使用临时 docId');
-            return `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            debugLog('[DEBUG] parseResultItem: 无法提取文书ID，跳过该项');
+            return null;
         };
 
         const 文书ID = await getDocId();
+        if (!文书ID) {
+            continue;
+        }
 
         if (!案件名称 && !案号) {
-            console.error('[DEBUG] parseResultItem: 案件名称和案号都为空，返回 null');
+            debugLog('[DEBUG] parseResultItem: 案件名称和案号都为空，跳过该项');
             continue;
         }
 
@@ -160,8 +168,8 @@ export async function parseDocumentDetail(page: Page, docId: string): Promise<Do
     });
 
     if (!案件名称 && !案号 && !文书全文) {
-        console.error('[ERROR] parseDocumentDetail: 文书内容为空');
-        console.error(`[ERROR] parseDocumentDetail: docId = ${docId.substring(0, 50)}...`);
+        debugLog('[ERROR] parseDocumentDetail: 文书内容为空');
+        debugLog(`[ERROR] parseDocumentDetail: docId = ${docId.substring(0, 50)}...`);
 
         let pageHint = '';
         if (bodyText) {
@@ -184,7 +192,7 @@ export async function parseDocumentDetail(page: Page, docId: string): Promise<Do
     const 当事人 = await parseParties(page);
     const 审判人员 = await parseJudges(page);
     const 法院级别 = inferCourtLevel(法院名称);
-    const 案件类型 = inferCaseType(案号, 案件名称, 文书全文);
+    const 案件类型 = inferCaseType(案号);
     const 清洗后裁判日期 = normalizeJudgmentDate(裁判日期, 文书全文);
 
     return {
@@ -236,13 +244,13 @@ async function extractDocumentFullText(page: Page): Promise<string> {
     }
 
     if (bestText) {
-        console.error(`[DEBUG] parseDocumentDetail: 文书全文提取成功，长度 = ${bestText.length}`);
+        debugLog(`[DEBUG] parseDocumentDetail: 文书全文提取成功，长度 = ${bestText.length}`);
         return bestText;
     }
 
     const bodyText = await extractBodyFallbackText(page);
     if (bodyText) {
-        console.error(`[DEBUG] parseDocumentDetail: 使用 body 兜底提取正文，长度 = ${bodyText.length}`);
+        debugLog(`[DEBUG] parseDocumentDetail: 使用 body 兜底提取正文，长度 = ${bodyText.length}`);
         return cleanDocumentText(bodyText);
     }
 
@@ -534,22 +542,24 @@ function inferCourtLevel(courtName: string): string {
     return '未知级别';
 }
 
-function inferCaseType(caseNo: string, caseName: string, fullText: string = ''): string {
-    const combined = `${caseNo} ${caseName} ${fullText}`;
+function inferCaseType(caseNo: string): string {
+    if (!caseNo) {
+        return '未知类型';
+    }
 
-    if (combined.includes('刑') || combined.includes('刑事')) {
+    if (/刑|刑事/.test(caseNo)) {
         return '刑事案件';
     }
-    if (combined.includes('民') || combined.includes('民事')) {
+    if (/民|民事/.test(caseNo)) {
         return '民事案件';
     }
-    if (combined.includes('行') || combined.includes('行政')) {
+    if (/行|行政/.test(caseNo)) {
         return '行政案件';
     }
-    if (combined.includes('赔') || combined.includes('赔偿')) {
+    if (/赔|赔偿/.test(caseNo)) {
         return '赔偿案件';
     }
-    if (combined.includes('执') || combined.includes('执行')) {
+    if (/执|执行/.test(caseNo)) {
         return '执行案件';
     }
 

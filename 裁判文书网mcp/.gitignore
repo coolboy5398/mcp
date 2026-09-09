@@ -1,1 +1,17 @@
 .ace-tool/
+
+# Session data (contains sensitive login credentials)
+session-data/
+session-data/**
+debug.log
+
+# Dependencies & build
+node_modules/
+dist/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local

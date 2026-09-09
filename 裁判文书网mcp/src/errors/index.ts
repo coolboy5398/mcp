@@ -4,6 +4,14 @@
  * 需求: 6.1, 6.2, 6.3
  */
 
+import { sanitizeDetails, sanitizeErrorMessage } from '../utils/sanitize.js';
+import {
+    getClientErrorMessage,
+    isSafeErrorsEnabled,
+    logInternalError,
+    SAFE_INTERNAL_MESSAGE,
+} from '../utils/safe-errors.js';
+
 /**
  * 错误代码枚举
  */
@@ -62,8 +70,8 @@ export class MCPError extends Error {
     toErrorInfo(): MCPErrorInfo {
         return {
             code: this.code,
-            message: this.message,
-            details: this.details,
+            message: sanitizeErrorMessage(this.message),
+            details: sanitizeDetails(this.details),
             retryAfter: this.retryAfter,
         };
     }
@@ -134,6 +142,17 @@ export class InternalError extends MCPError {
     constructor(message: string, details?: Record<string, unknown>) {
         super(ErrorCode.INTERNAL_ERROR, message, details);
         this.name = "InternalError";
+    }
+
+    override toErrorInfo(): MCPErrorInfo {
+        if (isSafeErrorsEnabled()) {
+            return {
+                code: this.code,
+                message: SAFE_INTERNAL_MESSAGE,
+            };
+        }
+
+        return super.toErrorInfo();
     }
 }
 
@@ -227,14 +246,13 @@ export function toMCPError(error: unknown): MCPError {
     }
 
     if (error instanceof Error) {
-        return new InternalError(error.message, {
+        return new InternalError(sanitizeErrorMessage(error.message), {
             originalError: error.name,
-            stack: error.stack,
         });
     }
 
     return new InternalError("发生未知错误", {
-        originalError: String(error),
+        originalError: sanitizeErrorMessage(String(error)),
     });
 }
 
@@ -247,6 +265,17 @@ export function createErrorResponse(error: unknown): {
     isError: true;
     content: Array<{ type: "text"; text: string }>;
 } {
+    if (isSafeErrorsEnabled()) {
+        logInternalError(error);
+    }
+
     const mcpError = toMCPError(error);
     return mcpError.toMCPResponse();
+}
+
+/**
+ * 获取适合展示给客户端的 MCP 错误消息
+ */
+export function getPublicMCPErrorMessage(error: MCPError): string {
+    return getClientErrorMessage(error.message, error.code === ErrorCode.INTERNAL_ERROR);
 }

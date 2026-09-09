@@ -114,6 +114,7 @@ export class AuthManager {
     private browser: Browser | null = null;
     private context: BrowserContext | null = null;
     private page: Page | null = null;
+    private initPromise: Promise<void> | null = null;
     private readonly pagePoolManager: PagePoolManager;
 
     constructor(config?: AuthManagerConfig) {
@@ -144,6 +145,16 @@ export class AuthManager {
      * 需求 7.1: 文书服务器应提供检查当前登录状态的工具
      */
     async initBrowser(headless?: boolean): Promise<void> {
+        if (!this.initPromise) {
+            this.initPromise = this.doInitBrowser(headless).finally(() => {
+                this.initPromise = null;
+            });
+        }
+
+        await this.initPromise;
+    }
+
+    private async doInitBrowser(headless?: boolean): Promise<void> {
         const useHeadless = headless ?? this.config.headless;
 
         if (this.browser) {
@@ -232,7 +243,7 @@ export class AuthManager {
             this.logger.log(`[DEBUG] loadSavedSession: 成功添加 ${playwrightCookies.length} 个cookies到浏览器`);
             return true;
         } catch (error) {
-            this.logger.log(`加载Session到浏览器失败: ${error}`);
+            this.logger.error(`加载Session到浏览器失败: ${error}`);
             return false;
         }
     }
@@ -507,7 +518,7 @@ export class AuthManager {
                 }
             }
         } catch (error) {
-            this.logger.log(`获取iframe失败，使用当前页面: ${error}`);
+            this.logger.warn(`获取iframe失败，使用当前页面: ${error}`);
         }
 
         return targetPage;
@@ -636,7 +647,7 @@ export class AuthManager {
                 const element = await frame.$(selector);
                 if (element && await element.isVisible()) {
                     await element.click();
-                    this.logger.log(`成功点击支付宝图标: ${selector}`);
+                    this.logger.debug(`成功点击支付宝图标: ${selector}`);
                     await targetPage.waitForTimeout(2000);
                     return;
                 }
@@ -650,7 +661,7 @@ export class AuthManager {
             const count = await alipayText.count();
             if (count > 0) {
                 await alipayText.first().click();
-                this.logger.log('成功点击包含"支付宝"文字的元素');
+                this.logger.debug('成功点击包含"支付宝"文字的元素');
                 await targetPage.waitForTimeout(2000);
                 return;
             }
@@ -670,7 +681,7 @@ export class AuthManager {
                     || title.includes('支付宝')) {
                     if (await img.isVisible()) {
                         await img.click();
-                        this.logger.log('通过图片属性识别并点击支付宝图标');
+                        this.logger.debug('通过图片属性识别并点击支付宝图标');
                         await targetPage.waitForTimeout(2000);
                         return;
                     }
@@ -684,7 +695,7 @@ export class AuthManager {
             const loginBtn = await frame.$(QR_CODE_SELECTORS.loginButton);
             if (loginBtn && await loginBtn.isVisible()) {
                 await loginBtn.click();
-                this.logger.log('点击了通用登录按钮');
+                this.logger.debug('点击了通用登录按钮');
                 await targetPage.waitForTimeout(2000);
             }
         } catch {
@@ -785,7 +796,7 @@ export class AuthManager {
             }
 
             for (const cookie of allCookies) {
-                this.logger.log(`[DEBUG] saveCurrentSession: cookie "${cookie.name}" domain="${cookie.domain}" value="${cookie.value.substring(0, 20)}..."`);
+                this.logger.log(`[DEBUG] saveCurrentSession: cookie "${cookie.name}" domain="${cookie.domain}"`);
             }
 
             if (allCookies.length === 0) {
@@ -800,7 +811,7 @@ export class AuthManager {
             const savedCookies = await this.sessionStore.getCookies();
             this.logger.log(`[DEBUG] saveCurrentSession: 验证保存结果，读取到 ${savedCookies.length} 个cookies`);
         } catch (error) {
-            this.logger.log(`保存Session失败: ${error}`);
+            this.logger.error(`保存Session失败: ${error}`);
             throw error;
         }
     }

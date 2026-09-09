@@ -12,7 +12,8 @@ import {
     QRCodeInfo,
     WaitLoginResult,
 } from '../auth/index.js';
-import { createErrorResponse, toMCPError } from '../errors/index.js';
+import { createErrorResponse, getPublicMCPErrorMessage, toMCPError } from '../errors/index.js';
+import { isSafeErrorsEnabled, logInternalError } from '../utils/safe-errors.js';
 
 /**
  * 登录状态输出接口
@@ -20,6 +21,7 @@ import { createErrorResponse, toMCPError } from '../errors/index.js';
 export interface LoginStatusOutput {
     已登录: boolean;
     消息: string;
+    状态?: '正常' | '检查失败';
     剩余有效时间?: number;
     需要扫码?: boolean;
     二维码图片?: string;
@@ -129,6 +131,7 @@ export class AuthTools {
             const status: AuthStatus = await this.authManager.checkLoginStatus();
             return {
                 已登录: status.已登录,
+                状态: '正常',
                 消息: status.已登录
                     ? status.消息
                     : '未登录或Session已过期，请调用 ensure_login 或 login_qrcode 获取二维码',
@@ -136,10 +139,14 @@ export class AuthTools {
                 需要扫码: !status.已登录,
             };
         } catch (error) {
+            if (isSafeErrorsEnabled()) {
+                logInternalError(error);
+            }
             const mcpError = toMCPError(error);
             return {
                 已登录: false,
-                消息: `检查登录状态失败: ${mcpError.message}`,
+                状态: '检查失败',
+                消息: `检查登录状态失败: ${getPublicMCPErrorMessage(mcpError)}`,
             };
         }
     }
@@ -226,10 +233,13 @@ export class AuthTools {
                 消息: '已成功登出',
             };
         } catch (error) {
+            if (isSafeErrorsEnabled()) {
+                logInternalError(error);
+            }
             const mcpError = toMCPError(error);
             return {
                 成功: false,
-                消息: `登出失败: ${mcpError.message}`,
+                消息: `登出失败: ${getPublicMCPErrorMessage(mcpError)}`,
             };
         }
     }
@@ -308,6 +318,7 @@ export function createAuthToolHandlers(authManager?: AuthManager) {
                             text: JSON.stringify(result, null, 2),
                         },
                     ],
+                    ...(result.状态 === '检查失败' ? { isError: true as const } : {}),
                 };
             } catch (error) {
                 return createErrorResponse(error);

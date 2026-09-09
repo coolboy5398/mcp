@@ -24,6 +24,9 @@ import {
     createAllToolHandlers,
     ToolName,
 } from './tools/index.js';
+import { parseDebugEnv, setDebugEnabled } from './utils/debug.js';
+import { parseSafeErrorsEnv, setSafeErrorsEnabled } from './utils/safe-errors.js';
+import { sanitizeErrorMessage, sanitizeLogMessage } from './utils/sanitize.js';
 
 /**
  * 服务器配置接口
@@ -173,8 +176,9 @@ async function startServer(config: ServerConfig = DEFAULT_CONFIG): Promise<void>
     console.error(`裁判文书网MCP服务器已启动`);
     console.error(`服务器名称: ${config.name}`);
     console.error(`服务器版本: ${config.version}`);
-    console.error(`Session路径: ${config.sessionPath}`);
+    console.error(`Session目录: ${sanitizeLogMessage(config.sessionPath ?? DEFAULT_CONFIG.sessionPath ?? './session-data')}`);
     console.error(`无头模式: ${config.headless}`);
+    console.error(`安全错误模式: ${parseSafeErrorsEnv(process.env.NODE_ENV, process.env.MCP_SAFE_ERRORS)}`);
 }
 
 /**
@@ -191,6 +195,9 @@ function parseArgs(): ServerConfig {
     if (process.env.HEADLESS !== undefined) {
         config.headless = process.env.HEADLESS.toLowerCase() !== 'false';
     }
+
+    setDebugEnabled(parseDebugEnv(process.env.DEBUG));
+    setSafeErrorsEnabled(parseSafeErrorsEnv(process.env.NODE_ENV, process.env.MCP_SAFE_ERRORS));
     
     // 然后解析命令行参数（优先级更高）
     const args = process.argv.slice(2);
@@ -248,6 +255,7 @@ function printHelp(): void {
 环境变量:
   SESSION_PATH          Session存储路径（推荐使用绝对路径）
   HEADLESS              是否使用无头模式 (true/false)
+  DEBUG                 是否启用调试日志 (true/false)
 
 配置优先级: 命令行参数 > 环境变量 > 默认值
 
@@ -283,7 +291,8 @@ MCP配置示例 (mcp.json):
 // 主入口
 const config = parseArgs();
 startServer(config).catch((error) => {
-    console.error('服务器启动失败:', error);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('服务器启动失败:', sanitizeErrorMessage(message));
     process.exit(1);
 });
 
